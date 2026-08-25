@@ -1,0 +1,9 @@
+# tools/ 검증·보조 도구용 의존성
+# 설치: pip install -r tools/requirements.txt
+ccxt>=4.3.0
+pandas>=2.0.0
+numpy>=1.26.0
+vectorbt>=0.26.0
+backtrader>=1.9.78.123
+matplotlib>=3.8.0
+python-dotenv>=1.0.0

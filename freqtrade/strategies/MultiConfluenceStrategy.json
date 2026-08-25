@@ -1,0 +1,43 @@
+{
+  "strategy_name": "MultiConfluenceStrategy",
+  "params": {
+    "trailing": {
+      "trailing_stop": true,
+      "trailing_stop_positive": 0.02,
+      "trailing_stop_positive_offset": 0.04,
+      "trailing_only_offset_is_reached": true
+    },
+    "max_open_trades": {
+      "max_open_trades": 3
+    },
+    "buy": {
+      "adx_period": 10,
+      "adx_threshold": 21,
+      "atr_period": 19,
+      "bb_period": 18,
+      "bb_std": 1.76,
+      "macd_fast": 11,
+      "macd_signal": 9,
+      "macd_slow": 22,
+      "stoch_d_period": 3,
+      "stoch_k_period": 16,
+      "stoch_threshold": 47
+    },
+    "sell": {
+      "atr_stoploss_multiplier": 2.961,
+      "stoch_overbought": 90,
+      "stoch_oversold": 10
+    },
+    "roi": {
+      "0": 0.318,
+      "385": 0.153,
+      "917": 0.063,
+      "1960": 0
+    },
+    "stoploss": {
+      "stoploss": -0.124
+    }
+  },
+  "ft_stratparam_v": 1,
+  "export_time": "2026-08-24 00:00:00.000000+00:00"
+}

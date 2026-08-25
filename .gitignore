@@ -1,0 +1,17 @@
+.env
+__pycache__/
+*.pyc
+freqtrade/user_data/
+freqtrade/walk_forward_results.csv
+*.sqlite
+backtrader_result.png
+finrl_ppo_crypto_model.zip
+
+# secrets / keys — never commit
+aws/*.pem
+*.pem
+*.key
+
+# logs / local-only artifacts
+freqtrade/dashboard/*.log
+.claude/

@@ -1,0 +1,102 @@
+services:
+  # 단일 전략 운용 (Phase 5 드라이런 기본값). 포트폴리오 분산 운용은 아래
+  # freqtrade-trend / freqtrade-meanreversion 두 서비스를 대신 사용하세요
+  # (docker compose up freqtrade-trend freqtrade-meanreversion).
+  freqtrade:
+    image: freqtradeorg/freqtrade:stable
+    container_name: freqtrade-binance
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    volumes:
+      - ./config_binance.json:/freqtrade/user_data/config.json
+      - ./strategies:/freqtrade/user_data/strategies
+      - ./user_data:/freqtrade/user_data
+    ports:
+      - "127.0.0.1:8080:8080"
+    command: >
+      trade
+      --config /freqtrade/user_data/config.json
+      --strategy MultiConfluenceStrategy
+
+  # --- Phase 6: 포트폴리오 (추세추종 + 평균회귀 동시 운용) ---
+  freqtrade-trend:
+    image: freqtradeorg/freqtrade:stable
+    container_name: freqtrade-trend
+    restart: unless-stopped
+    profiles: ["portfolio"]
+    env_file:
+      - ../.env
+    volumes:
+      - ./config_trend.json:/freqtrade/user_data/config.json
+      - ./strategies:/freqtrade/user_data/strategies
+      - ./user_data:/freqtrade/user_data
+    ports:
+      - "127.0.0.1:8081:8081"
+    command: >
+      trade
+      --config /freqtrade/user_data/config.json
+      --strategy MultiConfluenceStrategy
+
+  freqtrade-meanreversion:
+    image: freqtradeorg/freqtrade:stable
+    container_name: freqtrade-meanreversion
+    restart: unless-stopped
+    profiles: ["portfolio"]
+    env_file:
+      - ../.env
+    volumes:
+      - ./config_meanreversion.json:/freqtrade/user_data/config.json
+      - ./strategies:/freqtrade/user_data/strategies
+      - ./user_data:/freqtrade/user_data
+    ports:
+      - "127.0.0.1:8082:8082"
+    command: >
+      trade
+      --config /freqtrade/user_data/config.json
+      --strategy MeanReversionStrategy
+
+  # --- 선물(futures, 롱+숏, 레버리지) — 기본적으로 절대 같이 안 뜸.
+  # 반드시 명시적으로 "docker compose --profile futures up" 으로만 실행됨.
+  # config의 "leverage" 값으로 레버리지 조절 (기본 2배, 원하면 config json 직접 수정).
+  freqtrade-trend-futures:
+    image: freqtradeorg/freqtrade:stable
+    container_name: freqtrade-trend-futures
+    restart: unless-stopped
+    profiles: ["futures"]
+    env_file:
+      - ../.env
+    # 컨테이너 안에서 "host.docker.internal"로 호스트(대시보드 서버)를 부를 수 있게 함
+    # -> 한글 텔레그램 알림용 /webhook 릴레이(dashboard/server.py)를 호출하는 데 사용
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config_trend_futures.json:/freqtrade/user_data/config.json
+      - ./strategies:/freqtrade/user_data/strategies
+      - ./user_data:/freqtrade/user_data
+    ports:
+      - "127.0.0.1:8083:8083"
+    command: >
+      trade
+      --config /freqtrade/user_data/config.json
+      --strategy MultiConfluenceStrategy
+
+  freqtrade-meanreversion-futures:
+    image: freqtradeorg/freqtrade:stable
+    container_name: freqtrade-meanreversion-futures
+    restart: unless-stopped
+    profiles: ["futures"]
+    env_file:
+      - ../.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config_meanreversion_futures.json:/freqtrade/user_data/config.json
+      - ./strategies:/freqtrade/user_data/strategies
+      - ./user_data:/freqtrade/user_data
+    ports:
+      - "127.0.0.1:8084:8084"
+    command: >
+      trade
+      --config /freqtrade/user_data/config.json
+      --strategy MeanReversionStrategy

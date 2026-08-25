@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TradeOps Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- ===== Sidebar ===== -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">◆</div>
+      <span class="brand-name">TradeOps</span>
+    </div>
+
+    <nav class="nav">
+      <a class="nav-item active" data-target="section-overview">
+        <span class="nav-icon">▦</span> Overview
+      </a>
+      <a class="nav-item" data-target="section-charts">
+        <span class="nav-icon">📈</span> Performance
+      </a>
+      <a class="nav-item" data-target="section-positions">
+        <span class="nav-icon">⇄</span> Positions
+      </a>
+      <a class="nav-item" data-target="section-history">
+        <span class="nav-icon">⏱</span> History
+      </a>
+      <a class="nav-item" data-target="section-market">
+        <span class="nav-icon">◎</span> Market
+      </a>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="mode-pill" id="modePill">
+        <span class="mode-dot" id="modeDot"></span> <span id="modeText">확인 중</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ===== Main ===== -->
+  <div class="main">
+
+    <header class="topbar">
+      <div class="search-box">
+        <span class="search-icon">⌕</span>
+        <input id="pairFilter" type="text" placeholder="페어 검색 (예: BTC)" />
+      </div>
+
+      <div class="topbar-right">
+        <div class="alert-anchor">
+          <button class="icon-btn" title="알림" id="bellBtn">
+            🔔<span class="ping" id="alertPing"></span>
+          </button>
+          <div class="alert-modal" id="alertModal" hidden>
+            <div class="alert-modal-head">
+              <span>최근 알림</span>
+              <button class="alert-modal-close" id="alertModalClose">✕</button>
+            </div>
+            <div class="alert-modal-body" id="alertsList">
+              <div class="empty-row">알림 불러오는 중…</div>
+            </div>
+          </div>
+        </div>
+        <div class="profile">
+          <div class="avatar">FT</div>
+          <div class="profile-text">
+            <span class="profile-name">Binance Futures</span>
+            <span class="profile-sub" id="statusText">연결 확인 중</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <section class="content">
+
+      <section id="section-overview" class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-icon icon-blue">Σ</div>
+          <div class="stat-body">
+            <span class="stat-label">총 자산</span>
+            <span class="stat-value" id="statEquity">–</span>
+          </div>
+          <span class="stat-chip" id="statEquityChip">–</span>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon icon-purple">±</div>
+          <div class="stat-body">
+            <span class="stat-label">총 손익</span>
+            <span class="stat-value" id="statPnl">–</span>
+          </div>
+          <span class="stat-chip" id="statPnlChip">–</span>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon icon-orange">⇄</div>
+          <div class="stat-body">
+            <span class="stat-label">보유 포지션</span>
+            <span class="stat-value" id="statOpenCount">–</span>
+          </div>
+          <span class="stat-chip neutral-chip" id="statOpenChip">LIVE</span>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon icon-green">%</div>
+          <div class="stat-body">
+            <span class="stat-label">평균 승률</span>
+            <span class="stat-value" id="statWinrate">–</span>
+          </div>
+          <span class="stat-chip neutral-chip" id="statTradeCount">–</span>
+        </div>
+      </section>
+
+
+      <section id="section-charts" class="panel-grid">
+        <div class="panel chart-panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">누적 손익 추이</div>
+              <div class="panel-sub">최근 14일 · 전략별</div>
+            </div>
+            <div class="legend">
+              <span class="legend-item"><i class="dotcolor" style="background:#5b8def"></i>추세추종</span>
+              <span class="legend-item"><i class="dotcolor" style="background:#f59e0b"></i>평균회귀</span>
+            </div>
+          </div>
+          <div class="chart-canvas-wrap">
+            <canvas id="equityChart"></canvas>
+            <div class="chart-empty-state" id="equityEmptyState" hidden>
+              아직 쌓인 데이터가 없습니다.<br>거래가 진행되면 여기에 손익 곡선이 표시됩니다.
+            </div>
+          </div>
+        </div>
+
+        <div class="panel donut-panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">포지션 방향</div>
+              <div class="panel-sub">현재 보유 기준</div>
+            </div>
+          </div>
+          <div class="donut-canvas-wrap">
+            <canvas id="sideDonut"></canvas>
+          </div>
+          <div class="donut-legend" id="donutLegend"></div>
+        </div>
+      </section>
+
+      <section id="section-market" class="panel market-panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title">실시간 시세</div>
+            <div class="panel-sub">Binance Futures</div>
+          </div>
+        </div>
+        <table class="market-table">
+          <thead>
+            <tr><th>페어</th><th>가격</th><th>24H 변동</th></tr>
+          </thead>
+          <tbody id="tickerBody">
+            <tr><td colspan="3" class="empty-row">시세 불러오는 중…</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="section-positions">
+        <div class="bot-grid" id="botGrid">
+          <!-- 봇 카드가 JS로 렌더링됨 -->
+        </div>
+      </section>
+
+      <section id="section-history" class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title">전체 청산 이력</div>
+            <div class="panel-sub">최근 체결 기준</div>
+          </div>
+        </div>
+        <table class="history-table" id="historyTable">
+          <thead>
+            <tr><th>전략</th><th>페어</th><th>방향</th><th>손익%</th><th>손익$</th><th>청산사유</th><th>시각</th></tr>
+          </thead>
+          <tbody><tr><td colspan="7" class="empty-row">불러오는 중…</td></tr></tbody>
+        </table>
+      </section>
+
+    </section>
+
+    <footer class="footer">
+      <span id="footerModeText">상태 확인 중</span>
+      <span id="lastUpdate">–</span>
+    </footer>
+
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
