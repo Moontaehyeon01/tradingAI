@@ -1,0 +1,57 @@
+{
+  "strategy_name": "MultiConfluenceStrategyV2",
+  "params": {
+    "trailing": {
+      "trailing_stop": true,
+      "trailing_stop_positive": 0.02,
+      "trailing_stop_positive_offset": 0.04,
+      "trailing_only_offset_is_reached": true
+    },
+    "max_open_trades": {
+      "max_open_trades": 4
+    },
+    "buy": {
+      "adx_period": 11,
+      "adx_threshold": 20,
+      "atr_period": 17,
+      "bb_period": 16,
+      "bb_std": 2.276,
+      "macd_fast": 8,
+      "macd_signal": 12,
+      "macd_slow": 21,
+      "stoch_d_period": 5,
+      "stoch_k_period": 12,
+      "stoch_threshold": 48,
+      "xrp_adx_period": 14,
+      "xrp_adx_threshold": 29,
+      "xrp_atr_period": 17,
+      "xrp_bb_period": 18,
+      "xrp_bb_std": 2.244,
+      "xrp_macd_fast": 15,
+      "xrp_macd_signal": 8,
+      "xrp_macd_slow": 20,
+      "xrp_stoch_d_period": 6,
+      "xrp_stoch_k_period": 11,
+      "xrp_stoch_threshold": 47
+    },
+    "sell": {
+      "atr_stoploss_multiplier": 3.882,
+      "stoch_overbought": 87,
+      "stoch_oversold": 19,
+      "xrp_atr_stoploss_multiplier": 2.373,
+      "xrp_stoch_overbought": 88,
+      "xrp_stoch_oversold": 12
+    },
+    "roi": {
+      "0": 0.149,
+      "316": 0.069,
+      "516": 0.043,
+      "966": 0
+    },
+    "stoploss": {
+      "stoploss": -0.337
+    }
+  },
+  "ft_stratparam_v": 1,
+  "export_time": "2026-08-26 15:28:58.737986+00:00"
+}

@@ -100,3 +100,8 @@ services:
       trade
       --config /freqtrade/user_data/config.json
       --strategy MeanReversionStrategy
+
+  # 예전엔 XRP를 별도 봇 인스턴스(freqtrade-trend-xrp-futures 등)로 분리했었으나,
+  # 계좌 잔고를 추세추종/평균회귀 계열끼리 공유하기 위해 통합함. 지금은
+  # MultiConfluenceStrategy/MeanReversionStrategy 안에서 페어가 XRP일 때만
+  # XRP 전용 파라미터(XRP_PARAMS)로 분기하는 방식으로 대체됨 (strategies/*.py 참고).

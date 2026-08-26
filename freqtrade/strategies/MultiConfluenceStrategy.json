@@ -8,36 +8,50 @@
       "trailing_only_offset_is_reached": true
     },
     "max_open_trades": {
-      "max_open_trades": 3
+      "max_open_trades": 4
     },
     "buy": {
-      "adx_period": 10,
-      "adx_threshold": 21,
-      "atr_period": 19,
-      "bb_period": 18,
-      "bb_std": 1.76,
-      "macd_fast": 11,
+      "adx_period": 14,
+      "adx_threshold": 29,
+      "atr_period": 13,
+      "bb_period": 15,
+      "bb_std": 2.127,
+      "macd_fast": 12,
       "macd_signal": 9,
-      "macd_slow": 22,
-      "stoch_d_period": 3,
-      "stoch_k_period": 16,
-      "stoch_threshold": 47
+      "macd_slow": 25,
+      "stoch_d_period": 4,
+      "stoch_k_period": 19,
+      "stoch_threshold": 52,
+      "xrp_adx_period": 14,
+      "xrp_adx_threshold": 28,
+      "xrp_atr_period": 19,
+      "xrp_bb_period": 18,
+      "xrp_bb_std": 1.859,
+      "xrp_macd_fast": 15,
+      "xrp_macd_signal": 12,
+      "xrp_macd_slow": 28,
+      "xrp_stoch_d_period": 3,
+      "xrp_stoch_k_period": 10,
+      "xrp_stoch_threshold": 47
     },
     "sell": {
-      "atr_stoploss_multiplier": 2.961,
-      "stoch_overbought": 90,
-      "stoch_oversold": 10
+      "atr_stoploss_multiplier": 2.923,
+      "stoch_overbought": 86,
+      "stoch_oversold": 15,
+      "xrp_atr_stoploss_multiplier": 3.196,
+      "xrp_stoch_overbought": 82,
+      "xrp_stoch_oversold": 14
     },
     "roi": {
-      "0": 0.318,
-      "385": 0.153,
-      "917": 0.063,
-      "1960": 0
+      "0": 0.679,
+      "368": 0.223,
+      "820": 0.078,
+      "2208": 0
     },
     "stoploss": {
-      "stoploss": -0.124
+      "stoploss": -0.228
     }
   },
   "ft_stratparam_v": 1,
-  "export_time": "2026-08-24 00:00:00.000000+00:00"
+  "export_time": "2026-08-26 15:41:40.175598+00:00"
 }

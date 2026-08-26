@@ -15,3 +15,13 @@ aws/*.pem
 # logs / local-only artifacts
 freqtrade/dashboard/*.log
 .claude/
+
+# 성능 비교용 실험 (Calmar 손실함수 / 페어확대 / FreqAI) — 로컬 전용, 커밋 안 함
+freqtrade/config_*_multipair.json
+freqtrade/config_freqai_*.json
+freqtrade/strategies/FreqAICompareStrategy.py
+freqtrade/walk_forward_results_*_calmar.csv
+freqtrade/walk_forward_results_*_multipair.csv
+freqtrade/walk_forward_results_*_xrp4.csv
+freqtrade/config_*_xrp_only.json
+freqtrade/walk_forward_results_*_xrp_only.csv

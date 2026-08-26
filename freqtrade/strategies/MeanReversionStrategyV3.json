@@ -1,0 +1,51 @@
+{
+  "strategy_name": "MeanReversionStrategyV3",
+  "params": {
+    "trailing": {
+      "trailing_stop": false,
+      "trailing_stop_positive": null,
+      "trailing_stop_positive_offset": 0.0,
+      "trailing_only_offset_is_reached": false
+    },
+    "max_open_trades": {
+      "max_open_trades": 4
+    },
+    "buy": {
+      "adx_period": 10,
+      "adx_regime_threshold": 30,
+      "atr_period": 11,
+      "bb_period": 18,
+      "bb_std": 2.274,
+      "rsi_overbought": 70,
+      "rsi_oversold": 39,
+      "rsi_period": 19,
+      "xrp_adx_period": 10,
+      "xrp_adx_regime_threshold": 18,
+      "xrp_atr_period": 19,
+      "xrp_bb_period": 17,
+      "xrp_bb_std": 2.764,
+      "xrp_rsi_overbought": 69,
+      "xrp_rsi_oversold": 29,
+      "xrp_rsi_period": 15
+    },
+    "sell": {
+      "atr_stoploss_multiplier": 1.775,
+      "rsi_exit": 59,
+      "rsi_exit_short": 35,
+      "xrp_atr_stoploss_multiplier": 2.268,
+      "xrp_rsi_exit": 67,
+      "xrp_rsi_exit_short": 45
+    },
+    "roi": {
+      "0": 0.327,
+      "130": 0.199,
+      "312": 0.042,
+      "1118": 0
+    },
+    "stoploss": {
+      "stoploss": -0.076
+    }
+  },
+  "ft_stratparam_v": 1,
+  "export_time": "2026-08-26 15:33:31.070293+00:00"
+}

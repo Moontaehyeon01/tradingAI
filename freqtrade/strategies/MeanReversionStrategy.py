@@ -57,7 +57,14 @@ from datetime import datetime
 class MeanReversionStrategy(IStrategy):
 
     timeframe = "1h"
-    startup_candle_count = 100
+    startup_candle_count = 220
+
+    # 장기 추세(EMA100) 방향 필터 + 1% 여유폭: 큰 흐름과 확실히 반대인 진입만 차단
+    # (5년 워크포워드 검증: 52/57 구간 플러스, 마이너스 0개. 기존 MeanReversionStrategy가
+    # 진짜 하락추세에서도 "횡보장"으로 오판해 눌림목을 계속 사서 손절을 반복하던 문제를
+    # 해결하기 위해 추가함 — 자세한 배경은 이전 로컬 실험 MeanReversionStrategyV3 참고)
+    trend_ema_period = 100
+    trend_ema_buffer_pct = 0.01
 
     stoploss = -0.10  # 추세추종 전략보다 타이트하게 (평균회귀는 역추세 베팅이라 더 보수적으로)
 
@@ -90,6 +97,37 @@ class MeanReversionStrategy(IStrategy):
     atr_period = IntParameter(10, 20, default=14, space="buy")
     atr_stoploss_multiplier = DecimalParameter(1.2, 3.0, default=1.8, space="sell")
 
+    # ------------------------------------------------------------------
+    # XRP 전용 하이퍼옵트 파라미터 (MultiConfluenceStrategy와 동일한 이유:
+    # BTC/ETH/SOL 위주로 최적화된 파라미터는 XRP에 신호가 거의 안 나와서,
+    # 같은 프로세스 안에서 페어가 XRP일 때만 별도 파라미터로 분기함.
+    # 탐색 범위는 위 기본 파라미터와 동일 -> hyperopt 한 번으로 두 세트가
+    # 같은 목적함수 기준으로 동시에 튜닝됨)
+    # ------------------------------------------------------------------
+    XRP_PAIR = "XRP/USDT:USDT"
+
+    xrp_bb_period = IntParameter(15, 25, default=21, space="buy")
+    xrp_bb_std = DecimalParameter(1.2, 3.0, default=1.565, space="buy")
+
+    xrp_rsi_period = IntParameter(10, 20, default=17, space="buy")
+    xrp_rsi_oversold = IntParameter(25, 45, default=35, space="buy")
+    xrp_rsi_exit = IntParameter(55, 70, default=70, space="sell")
+
+    xrp_rsi_overbought = IntParameter(55, 75, default=67, space="buy")
+    xrp_rsi_exit_short = IntParameter(30, 45, default=38, space="sell")
+
+    xrp_adx_period = IntParameter(10, 20, default=15, space="buy")
+    xrp_adx_regime_threshold = IntParameter(18, 35, default=18, space="buy")
+
+    xrp_atr_period = IntParameter(10, 20, default=20, space="buy")
+    xrp_atr_stoploss_multiplier = DecimalParameter(1.2, 3.0, default=1.637, space="sell")
+
+    def _p(self, name: str, pair: str):
+        """파라미터 값을 페어에 맞게 반환 (XRP면 xrp_<name> 하이퍼옵트 파라미터, 아니면 기본값)"""
+        if pair == self.XRP_PAIR:
+            return getattr(self, f"xrp_{name}").value
+        return getattr(self, name).value
+
     # spot config에서 can_short=True인 채로 로드하면 freqtrade가 아예 에러를 내며 거부함
     # ("Short strategies cannot run in spot markets") -> trading_mode를 보고 동적으로 결정
     @property
@@ -100,17 +138,21 @@ class MeanReversionStrategy(IStrategy):
     # 지표 계산
     # ------------------------------------------------------------------
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        pair = metadata["pair"]
 
         bollinger = ta.BBANDS(
-            dataframe, timeperiod=self.bb_period.value, nbdevup=self.bb_std.value, nbdevdn=self.bb_std.value
+            dataframe, timeperiod=self._p("bb_period", pair), nbdevup=self._p("bb_std", pair), nbdevdn=self._p("bb_std", pair)
         )
         dataframe["bb_upper"] = bollinger["upperband"]
         dataframe["bb_mid"] = bollinger["middleband"]
         dataframe["bb_lower"] = bollinger["lowerband"]
 
-        dataframe["rsi"] = ta.RSI(dataframe, timeperiod=self.rsi_period.value)
-        dataframe["adx"] = ta.ADX(dataframe, timeperiod=self.adx_period.value)
-        dataframe["atr"] = ta.ATR(dataframe, timeperiod=self.atr_period.value)
+        dataframe["rsi"] = ta.RSI(dataframe, timeperiod=self._p("rsi_period", pair))
+        dataframe["adx"] = ta.ADX(dataframe, timeperiod=self._p("adx_period", pair))
+        dataframe["atr"] = ta.ATR(dataframe, timeperiod=self._p("atr_period", pair))
+
+        # 장기 추세 방향 필터용 EMA
+        dataframe["trend_ema"] = ta.EMA(dataframe, timeperiod=self.trend_ema_period)
 
         return dataframe
 
@@ -118,18 +160,22 @@ class MeanReversionStrategy(IStrategy):
     # 진입 조건 (횡보장 + 과매도/과매수 반등, 롱/숏 대칭)
     # ------------------------------------------------------------------
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        pair = metadata["pair"]
+        adx_regime_threshold = self._p("adx_regime_threshold", pair)
+        rsi_oversold = self._p("rsi_oversold", pair)
+        rsi_overbought = self._p("rsi_overbought", pair)
 
         dataframe.loc[
             (
                 # 1) 국면 필터: 횡보장에서만 (추세장에서는 진입 안 함)
-                (dataframe["adx"] < self.adx_regime_threshold.value)
+                (dataframe["adx"] < adx_regime_threshold)
 
                 # 2) 볼린저밴드 하단 터치/이탈
                 & (dataframe["close"] <= dataframe["bb_lower"])
 
                 # 3) RSI 과매도 구간 (정확한 "상승 전환 캔들"까지는 요구하지 않음 —
                 #    페어당 중복 진입은 freqtrade가 막아주므로 매 캔들 재진입 걱정 없음)
-                & (dataframe["rsi"] < self.rsi_oversold.value)
+                & (dataframe["rsi"] < rsi_oversold)
 
                 & (dataframe["volume"] > 0)
             ),
@@ -139,13 +185,19 @@ class MeanReversionStrategy(IStrategy):
         # can_short=False(spot config)일 때는 freqtrade가 enter_short 컬럼을 무시함
         dataframe.loc[
             (
-                (dataframe["adx"] < self.adx_regime_threshold.value)
+                (dataframe["adx"] < adx_regime_threshold)
                 & (dataframe["close"] >= dataframe["bb_upper"])
-                & (dataframe["rsi"] > self.rsi_overbought.value)
+                & (dataframe["rsi"] > rsi_overbought)
                 & (dataframe["volume"] > 0)
             ),
             "enter_short",
         ] = 1
+
+        # 장기 추세와 확실히 반대 방향인 진입만 차단 (1% 여유폭 — EMA를 살짝 밑돌아도 롱 허용)
+        long_ok = dataframe["close"] >= dataframe["trend_ema"] * (1 - self.trend_ema_buffer_pct)
+        short_ok = dataframe["close"] <= dataframe["trend_ema"] * (1 + self.trend_ema_buffer_pct)
+        dataframe.loc[~long_ok, "enter_long"] = 0
+        dataframe.loc[~short_ok, "enter_short"] = 0
 
         return dataframe
 
@@ -153,16 +205,17 @@ class MeanReversionStrategy(IStrategy):
     # 청산 조건 (중심선 회귀 완료 또는 RSI 충분히 회복, 롱/숏 대칭)
     # ------------------------------------------------------------------
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        pair = metadata["pair"]
 
         dataframe.loc[
             (dataframe["close"] >= dataframe["bb_mid"])
-            | (dataframe["rsi"] > self.rsi_exit.value),
+            | (dataframe["rsi"] > self._p("rsi_exit", pair)),
             "exit_long",
         ] = 1
 
         dataframe.loc[
             (dataframe["close"] <= dataframe["bb_mid"])
-            | (dataframe["rsi"] < self.rsi_exit_short.value),
+            | (dataframe["rsi"] < self._p("rsi_exit_short", pair)),
             "exit_short",
         ] = 1
 
@@ -208,7 +261,7 @@ class MeanReversionStrategy(IStrategy):
         if atr == 0 or np.isnan(atr):
             return self.stoploss
 
-        atr_stop_distance = (atr * self.atr_stoploss_multiplier.value) / current_rate
+        atr_stop_distance = (atr * self._p("atr_stoploss_multiplier", pair)) / current_rate
         return max(-atr_stop_distance, self.stoploss)
 
     # ------------------------------------------------------------------

@@ -36,6 +36,7 @@ import json
 import os
 import subprocess
 import re
+import sys
 from datetime import datetime, timedelta
 
 DOCKER_IMAGE = "freqtradeorg/freqtrade:stable"
@@ -71,17 +72,29 @@ def build_cmd(args, freqtrade_args):
         return ["freqtrade"] + freqtrade_args
 
     root = os.getcwd()
+    # 주의: /freqtrade/user_data (부모)를 먼저 마운트하고, 그 위에
+    # /freqtrade/user_data/strategies (자식)를 나중에 마운트해야 함.
+    # 순서가 반대이면 나중에 마운트되는 부모 경로가 먼저 마운트된 자식 경로를
+    # 통째로 덮어써서 컨테이너 안에서 전략 파일을 아예 못 찾게 됨.
     return [
         "docker", "run", "--rm",
         "-v", f"{root}/{args.config}:/freqtrade/user_data/config.json",
-        "-v", f"{root}/strategies:/freqtrade/user_data/strategies",
         "-v", f"{root}/user_data:/freqtrade/user_data",
+        "-v", f"{root}/strategies:/freqtrade/user_data/strategies",
         DOCKER_IMAGE,
     ] + freqtrade_args
 
 
 def daterange_str(dt: datetime) -> str:
     return dt.strftime("%Y%m%d")
+
+
+def safe_print(text: str):
+    """Windows 콘솔(cp949 등)이 못 다루는 문자가 섞인 로그를 출력할 때
+    UnicodeEncodeError로 스크립트 전체가 죽는 걸 방지 (한 구간 실패는
+    그 구간만 건너뛰고 나머지 윈도우는 계속 진행되어야 함)."""
+    encoding = sys.stdout.encoding or "utf-8"
+    print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
 
 
 def run_hyperopt(args, train_start, train_end):
@@ -102,7 +115,7 @@ def run_hyperopt(args, train_start, train_end):
 
     if result.returncode != 0:
         print("[경고] hyperopt 실행 실패:")
-        print(result.stderr[-2000:])
+        safe_print(result.stderr[-2000:])
         return None
 
     # 마지막에 출력되는 JSON 형태의 best result 파싱 시도
@@ -131,7 +144,7 @@ def run_backtest(args, test_start, test_end):
 
     if result.returncode != 0:
         print("[경고] backtesting 실행 실패:")
-        print(result.stderr[-2000:])
+        safe_print(result.stderr[-2000:])
         return {"timerange": timerange, "total_profit_pct": None, "raw_log": result.stderr[-500:]}
 
     # 콘솔 출력(Rich 테이블, │ 구분자 포함)에서 "Total profit %" 행의 값을 파싱

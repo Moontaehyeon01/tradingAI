@@ -14,6 +14,7 @@ freqtrade REST API를 감싸는 얇은 프록시 겸 정적 파일 서버.
 
 import json
 import os
+import re
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -51,7 +52,7 @@ BOTS = [
     {"id": "meanreversion", "name": "MeanReversionStrategy (평균회귀)", "url": "http://127.0.0.1:8084", "leverage": 5},
 ]
 
-TICKER_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+TICKER_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 
 # 알림 기록 (대시보드 "최근 알림" 패널용). 서비스 재시작해도 유지되도록 파일에도 남김.
 NOTIFICATIONS_FILE = ROOT / "notifications.jsonl"
@@ -249,6 +250,44 @@ EXIT_REASON_KO = {
     "partial_exit": "부분 청산",
 }
 
+# freqtrade가 보내는 상태/경고/오류 메시지는 자유 형식 영어 문장이라 완벽한 번역은
+# 불가능함. 자주 나오는 패턴만 골라 한글로 바꿔주고, 매칭 안 되는 문장은 원문을
+# 그대로 붙여서 최소한 "번역이 안 된 문장"이라는 걸 알 수 있게 함.
+STATUS_TRANSLATIONS = [
+    (r"^running$", "실행 중"),
+    (r"^stopped$", "정지됨"),
+    (r"^reloaded$", "재적재됨"),
+    (r"^paused$", "일시정지됨"),
+    (r"insufficient (funds|balance)", "잔고 부족"),
+    (r"is not available.*market", "해당 거래소에서 거래 불가능한 페어"),
+    (r"could not be filled", "주문이 체결되지 않음"),
+    (r"unable to place (a )?(buy|sell|entry|exit|stoploss) order", "주문 실행 실패"),
+    (r"cancell?ing (entry|exit|buy|sell) order", "주문 취소 처리 중"),
+    (r"time ?out", "시간 초과(타임아웃)"),
+    (r"connection (error|timeout|refused)", "거래소 연결 오류"),
+    (r"rate limit", "요청 한도 초과(레이트 리밋)"),
+    (r"exchange error", "거래소 오류"),
+    (r"network error", "네트워크 오류"),
+    (r"unfilled timeout", "미체결 주문 타임아웃"),
+    (r"stoploss.*order", "손절 주문 처리"),
+    (r"liquidat", "강제 청산(청산가 도달)"),
+    (r"margin call", "마진콜"),
+    (r"bot stopped", "봇 정지됨"),
+    (r"bot started", "봇 시작됨"),
+    (r"process died|fatal exception|traceback", "봇 프로세스 오류 발생"),
+]
+
+
+def translate_status_message(raw_text: str) -> str:
+    if not raw_text:
+        return raw_text
+    lowered = raw_text.lower()
+    for pattern, ko in STATUS_TRANSLATIONS:
+        if re.search(pattern, lowered):
+            return f"{ko}\n(원문: {raw_text})"
+    # 매칭되는 패턴이 없으면 번역 실패를 명시하고 원문을 그대로 보여줌
+    return f"[번역 미지원 - 원문 그대로]\n{raw_text}"
+
 
 def send_telegram(text: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -337,6 +376,30 @@ def webhook_relay():
                 "profit_amount": profit_amount,
                 "stake_currency": stake_currency,
                 "exit_reason_ko": exit_reason_ko,
+            }
+        )
+
+    elif event in ("status", "warning", "startup", "exception"):
+        # freqtrade가 매매 외에 보내는 상태/경고/오류 메시지.
+        # notification_settings에서 telegram 네이티브 쪽은 꺼두고, 이 경로로만
+        # 한글 라벨을 붙여서 보냄 (완전 자동번역은 아니고 자주 나오는 패턴 매칭).
+        raw_status = data.get("status", "")
+        event_label = {
+            "status": "상태 알림",
+            "warning": "⚠️ 경고",
+            "startup": "봇 시작",
+            "exception": "🚨 오류",
+        }[event]
+        translated = translate_status_message(raw_status)
+        text = f"[{bot_name}] [{event_label}]\n{translated}\n====================="
+        send_telegram(text)
+        record_notification(
+            {
+                "time": now_iso,
+                "event": event,
+                "bot_name": bot_name,
+                "raw_status": raw_status,
+                "translated": translated,
             }
         )
 

@@ -548,7 +548,15 @@ document.querySelectorAll(".nav-item").forEach((item) => {
   item.addEventListener("click", () => {
     document.querySelectorAll(".nav-item").forEach((i) => i.classList.remove("active"));
     item.classList.add("active");
-    document.getElementById(item.dataset.target)?.scrollIntoView({ behavior: "auto", block: "start" });
+    const target = document.getElementById(item.dataset.target);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "auto", block: "start" });
+    // 클릭한 섹션이 잠깐 반짝여서 "여기로 이동했다"는 게 눈에 보이게 함
+    target.classList.remove("nav-flash");
+    // reflow를 강제해서 같은 섹션을 연달아 클릭해도 애니메이션이 다시 재생되게 함
+    void target.offsetWidth;
+    target.classList.add("nav-flash");
+    target.addEventListener("animationend", () => target.classList.remove("nav-flash"), { once: true });
   });
 });
 
