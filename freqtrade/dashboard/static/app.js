@@ -681,7 +681,10 @@ function renderAlerts(alerts) {
 document.querySelectorAll(".nav-item").forEach((item) => {
   item.addEventListener("click", () => {
     document.querySelectorAll(".nav-item").forEach((i) => i.classList.remove("active"));
-    item.classList.add("active");
+    // 사이드바와 모바일 하단바에 같은 항목이 하나씩 있으므로 둘 다 활성 표시
+    document
+      .querySelectorAll(`.nav-item[data-target="${item.dataset.target}"]`)
+      .forEach((i) => i.classList.add("active"));
     const target = document.getElementById(item.dataset.target);
     if (!target) return;
     target.scrollIntoView({ behavior: "auto", block: "start" });
