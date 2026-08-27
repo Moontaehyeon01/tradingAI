@@ -101,6 +101,31 @@ services:
       --config /freqtrade/user_data/config.json
       --strategy MeanReversionStrategy
 
+  # --- Phase 8: 박스권 돌파 전략 (BoxBreakoutStrategy) ---
+  # 기존 두 전략(추세추종/평균회귀)은 2026-08-27 검증에서 진입 신호에 통계적
+  # 엣지가 없음이 확인되어 이 전략으로 교체하는 것을 전제로 추가됨.
+  # 이 서비스만 띄우려면:
+  #   docker compose --profile futures up -d freqtrade-boxbreakout-futures
+  freqtrade-boxbreakout-futures:
+    image: freqtradeorg/freqtrade:stable
+    container_name: freqtrade-boxbreakout-futures
+    restart: unless-stopped
+    profiles: ["futures"]
+    env_file:
+      - ../.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config_boxbreakout_futures.json:/freqtrade/user_data/config.json
+      - ./strategies:/freqtrade/user_data/strategies
+      - ./user_data:/freqtrade/user_data
+    ports:
+      - "127.0.0.1:8085:8085"
+    command: >
+      trade
+      --config /freqtrade/user_data/config.json
+      --strategy BoxBreakoutStrategy
+
   # 예전엔 XRP를 별도 봇 인스턴스(freqtrade-trend-xrp-futures 등)로 분리했었으나,
   # 계좌 잔고를 추세추종/평균회귀 계열끼리 공유하기 위해 통합함. 지금은
   # MultiConfluenceStrategy/MeanReversionStrategy 안에서 페어가 XRP일 때만

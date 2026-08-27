@@ -46,7 +46,12 @@ MultiConfluenceStrategy는 추세장(ADX 높음)에서만 진입하는 반면,
 3. 선물(숏 포함)로 쓰려면 freqtrade/config_meanreversion_futures.json 사용
 """
 
-from freqtrade.strategy import IStrategy, IntParameter, DecimalParameter
+from freqtrade.strategy import (
+    IStrategy,
+    IntParameter,
+    DecimalParameter,
+    stoploss_from_absolute,
+)
 from freqtrade.persistence import Trade
 from pandas import DataFrame
 import talib.abstract as ta
@@ -66,7 +71,27 @@ class MeanReversionStrategy(IStrategy):
     trend_ema_period = 100
     trend_ema_buffer_pct = 0.01
 
-    stoploss = -0.10  # 추세추종 전략보다 타이트하게 (평균회귀는 역추세 베팅이라 더 보수적으로)
+    # ------------------------------------------------------------------
+    # 손절 설정 — 단위 주의!
+    #
+    # freqtrade의 stoploss 값은 "가격 이동폭"이 아니라 "레버리지 적용 후 계좌
+    # 손실률" 단위다 (adjust_stop_loss: new_loss = price * (1 - |stoploss/leverage|)).
+    # config의 leverage=5 기준이므로  stoploss=-0.35  ->  가격 7% 이동.
+    #
+    # 또한 freqtrade는 진입 시점에 이 고정값으로 손절선을 먼저 잡고, 그 뒤
+    # custom_stoploss는 "더 타이트하게"만 조일 수 있다(느슨하게는 못 함).
+    # 따라서 이 값은 custom_stoploss가 쓸 수 있는 최대폭(STOP_MAX_PCT)보다
+    # 반드시 느슨해야 한다. 그렇지 않으면 ATR 손절이 통째로 무력화된다.
+    #   -> STOP_MAX_PCT(12%) * 5배 = 0.60  이므로 여유를 둬서 -0.70
+    # ------------------------------------------------------------------
+    stoploss = -0.70
+
+    use_custom_stoploss = True
+
+    # custom_stoploss가 실제로 쓰는 손절폭 (전부 "가격 이동폭" 기준, 레버리지 무관)
+    STOP_MIN_PCT = 0.015   # 너무 타이트하면 노이즈에 털림
+    STOP_MAX_PCT = 0.12    # ATR이 아무리 커도 이 이상은 안 벌림
+    STOP_DEFAULT_PCT = 0.04  # ATR을 못 구했을 때 폴백
 
     trailing_stop = False  # 평균회귀는 목표가(중심선) 도달 시 바로 청산하는 게 기본 로직
 
@@ -95,7 +120,10 @@ class MeanReversionStrategy(IStrategy):
     adx_regime_threshold = IntParameter(18, 35, default=22, space="buy")  # 이 이하면 "횡보장"
 
     atr_period = IntParameter(10, 20, default=14, space="buy")
-    atr_stoploss_multiplier = DecimalParameter(1.2, 3.0, default=1.8, space="sell")
+    # 탐색 범위 대폭 확대: 이 파라미터는 use_custom_stoploss=False였던 탓에
+    # 지금까지 하이퍼옵트가 아무리 돌아도 결과에 전혀 영향을 못 준 "죽은 파라미터"였음.
+    # 이제 실제로 작동하므로 처음부터 넓게 다시 탐색해야 함.
+    atr_stoploss_multiplier = DecimalParameter(1.5, 8.0, default=3.5, space="sell")
 
     # ------------------------------------------------------------------
     # XRP 전용 하이퍼옵트 파라미터 (MultiConfluenceStrategy와 동일한 이유:
@@ -120,7 +148,7 @@ class MeanReversionStrategy(IStrategy):
     xrp_adx_regime_threshold = IntParameter(18, 35, default=18, space="buy")
 
     xrp_atr_period = IntParameter(10, 20, default=20, space="buy")
-    xrp_atr_stoploss_multiplier = DecimalParameter(1.2, 3.0, default=1.637, space="sell")
+    xrp_atr_stoploss_multiplier = DecimalParameter(1.5, 8.0, default=3.5, space="sell")
 
     def _p(self, name: str, pair: str):
         """파라미터 값을 페어에 맞게 반환 (XRP면 xrp_<name> 하이퍼옵트 파라미터, 아니면 기본값)"""
@@ -239,7 +267,7 @@ class MeanReversionStrategy(IStrategy):
         return max(1.0, min(float(desired_leverage), max_leverage))
 
     # ------------------------------------------------------------------
-    # ATR 기반 동적 손절 (타이트한 버전)
+    # ATR 기반 동적 손절
     # ------------------------------------------------------------------
     def custom_stoploss(
         self,
@@ -250,19 +278,52 @@ class MeanReversionStrategy(IStrategy):
         current_profit: float,
         **kwargs,
     ) -> float:
+        """
+        진입 시점 ATR로 "절대 손절가"를 고정하고, 그걸 freqtrade가 요구하는
+        "현재가 대비 비율"로 변환해서 반환한다.
+
+        ※ freqtrade 내부 동작 (persistence/trade_model.py: adjust_stop_loss)
+             new_loss = current_price * (1 - |반환값 / leverage|)
+
+           여기서 두 가지가 직관과 다르다:
+           (1) 기준가가 '진입가'가 아니라 '현재가'다 (백테스트에서는 캔들 high).
+               -> 상수를 그대로 반환하면 의도치 않게 '트레일링 스탑'이 된다.
+                  이전 버전이 승률 20~40%, 보유시간 1~6시간으로 폭락했던 진짜 원인.
+           (2) 반환값이 leverage로 나뉜다.
+               -> '가격 이동폭'이 아니라 '레버리지 적용 후 계좌 손실률' 단위다.
+
+           이 두 변환을 정확히 처리해주는 게 freqtrade 기본 제공 헬퍼
+           stoploss_from_absolute() 이므로, 직접 계산하지 말고 이걸 쓴다.
+        """
+        # --- 진입 시점 캔들의 ATR로 손절폭 고정 ---
+        # (매 캔들 최신 ATR로 재계산하면 진입 후 변동성이 급등했을 때 손절폭이
+        #  같이 넓어져서, 정작 보호가 필요한 순간에 더 큰 손실을 허용하게 됨)
+        stop_distance_pct = self.STOP_DEFAULT_PCT
 
         dataframe, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.timeframe)
-        if dataframe is None or len(dataframe) == 0:
-            return self.stoploss
+        if dataframe is not None and len(dataframe) > 0 and trade.open_rate:
+            entry_candles = dataframe.loc[dataframe["date"] <= trade.open_date_utc]
+            row = entry_candles.iloc[-1] if len(entry_candles) else dataframe.iloc[-1]
+            atr = row["atr"]
+            if atr and not np.isnan(atr):
+                stop_distance_pct = (
+                    atr * self._p("atr_stoploss_multiplier", pair)
+                ) / trade.open_rate
 
-        last_candle = dataframe.iloc[-1]
-        atr = last_candle["atr"]
+        # 가격 기준(레버리지 무관) 손절폭을 상/하한으로 제한
+        stop_distance_pct = min(max(stop_distance_pct, self.STOP_MIN_PCT), self.STOP_MAX_PCT)
 
-        if atr == 0 or np.isnan(atr):
-            return self.stoploss
+        if trade.is_short:
+            stop_price = trade.open_rate * (1 + stop_distance_pct)
+        else:
+            stop_price = trade.open_rate * (1 - stop_distance_pct)
 
-        atr_stop_distance = (atr * self._p("atr_stoploss_multiplier", pair)) / current_rate
-        return max(-atr_stop_distance, self.stoploss)
+        return stoploss_from_absolute(
+            stop_price,
+            current_rate,
+            is_short=trade.is_short,
+            leverage=trade.leverage or 1.0,
+        )
 
     # ------------------------------------------------------------------
     # 포지션 사이징: 평균회귀는 역추세 베팅이라 기본적으로 추세추종보다 보수적으로
