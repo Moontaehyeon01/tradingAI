@@ -402,6 +402,49 @@ function renderOpenTrades(trades, filter) {
     </div>`;
 }
 
+/* 봇 시작/정지 버튼.
+   freqtrade의 state는 running / stopped / paused 세 가지.
+   running이 아니면 "정지됨"으로 보고 시작 버튼을 띄운다. */
+function renderBotPower(bot) {
+  const running = bot.state === "running";
+  const label = running ? "정지" : "시작";
+  const cls = running ? "power-btn stop" : "power-btn start";
+  return `
+    <span class="state-badge ${running ? "on" : "off"}">${running ? "가동중" : "정지"}</span>
+    <button class="${cls}" data-bot="${bot.id}" data-action="${running ? "stop" : "start"}">${label}</button>`;
+}
+
+async function onBotPowerClick(botId, action) {
+  const isStop = action === "stop";
+  const msg = isStop
+    ? "봇을 정지하시겠습니까?\n\n신규 진입이 멈춥니다. 열린 포지션이 있으면 그 포지션의 손절/익절 관리도 함께 멈추므로 직접 관리하셔야 합니다."
+    : "봇을 시작하시겠습니까?\n\n실전 모드라면 즉시 실제 주문이 나갈 수 있습니다.";
+  if (!window.confirm(msg)) return;
+
+  const btns = document.querySelectorAll(`.power-btn[data-bot="${botId}"]`);
+  btns.forEach((b) => { b.disabled = true; b.textContent = "..."; });
+  try {
+    const res = await fetch(`/api/bots/${botId}/${action}`, { method: "POST" });
+    const data = await res.json();
+    if (!data.ok) {
+      window.alert(`실패: ${data.error || "알 수 없는 오류"}`);
+    } else if (data.warning) {
+      window.alert(`정지했습니다.\n\n주의: ${data.warning}`);
+    }
+  } catch (err) {
+    window.alert(`요청 실패: ${err}`);
+  } finally {
+    if (typeof refresh === "function") refresh();
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".power-btn");
+  if (btn && !btn.disabled) {
+    onBotPowerClick(btn.dataset.bot, btn.dataset.action);
+  }
+});
+
 function renderBotCard(bot, filter) {
   if (!bot.connected) {
     return `
@@ -419,6 +462,7 @@ function renderBotCard(bot, filter) {
         <div class="bot-title"><span class="dot ok"></span>${bot.name}</div>
         <div class="badge-row">
           <span class="lev-badge">${bot.leverage}x</span>
+          ${renderBotPower(bot)}
         </div>
       </div>
       <div class="mini-stats">

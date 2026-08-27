@@ -5,7 +5,7 @@
     "tradable_balance_ratio": 0.5,
     "fiat_display_currency": "USD",
     "timeframe": "1h",
-    "dry_run": true,
+    "dry_run": false,
     "dry_run_wallet": 1000,
     "db_url": "sqlite:///user_data/boxbreakout_futures_live.sqlite",
     "cancel_open_orders_on_exit": false,
@@ -125,7 +125,7 @@
         "password": ""
     },
     "bot_name": "binance-boxbreakout-futures-bot",
-    "initial_state": "running",
+    "initial_state": "stopped",
     "force_entry_enable": false,
     "internals": {
         "process_throttle_secs": 5
