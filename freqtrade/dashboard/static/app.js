@@ -449,6 +449,17 @@ function goLogin() {
   window.location.href = "/login";
 }
 
+async function doLogout() {
+  try {
+    await fetch("/api/logout", { method: "POST" });
+  } catch {
+    /* 실패해도 아래에서 상태를 다시 읽어 반영한다 */
+  }
+  isAuthed = false;
+  await refreshAuthState();
+  if (typeof refresh === "function") refresh();
+}
+
 async function refreshAuthState() {
   try {
     const res = await fetch("/api/whoami", { cache: "no-store" });
@@ -460,13 +471,14 @@ async function refreshAuthState() {
   const el = document.getElementById("authControl");
   if (el) {
     el.innerHTML = isAuthed
-      ? `<span class="auth-badge on">로그인됨</span>`
+      ? `<span class="auth-badge on">로그인됨</span><button class="auth-btn" id="logoutBtn">로그아웃</button>`
       : `<button class="auth-btn" id="loginBtn">로그인</button>`;
   }
 }
 
 document.addEventListener("click", (e) => {
   if (e.target.closest("#loginBtn")) goLogin();
+  if (e.target.closest("#logoutBtn")) doLogout();
 });
 
 /* 봇 시작/정지 버튼.
