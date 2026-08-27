@@ -86,7 +86,16 @@ def record_notification(entry: dict):
 app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="")
 
 
+# 로그아웃 표시용 쿠키.
+# HTTP Basic 인증은 브라우저가 자격증명을 캐시해두고 계속 자동으로 보내기 때문에
+# "서버가 잊어버리는" 방식의 로그아웃이 존재하지 않는다. 그래서 이 쿠키가 있으면
+# 자격증명이 같이 와도 미인증으로 취급한다. 로그인하면 이 쿠키를 지운다.
+LOGOUT_COOKIE = "dash_logged_out"
+
+
 def _is_authed() -> bool:
+    if request.cookies.get(LOGOUT_COOKIE):
+        return False
     auth = request.authorization
     return bool(
         auth and auth.username == DASHBOARD_USERNAME and auth.password == DASHBOARD_PASSWORD
@@ -111,12 +120,23 @@ def check_dashboard_auth():
       - /webhook 은 freqtrade 컨테이너가 부르는 경로라 브라우저 로그인과 무관하게
         WEBHOOK_SECRET으로 따로 검증함 (webhook_relay 함수 안에서 체크)
       - /login 은 브라우저 Basic 인증 팝업을 띄우기 위한 전용 경로
+      - /api/logout 은 이미 로그아웃된 상태에서 또 눌러도 문제없도록 인증에서 제외
     """
     if request.path == "/webhook":
         return None
 
+    if request.path == "/api/logout":
+        return None
+
     if request.path == "/login":
-        if not _is_authed():
+        # 로그인 시도이므로 로그아웃 표시는 무시하고 자격증명만 본다
+        auth = request.authorization
+        ok = bool(
+            auth
+            and auth.username == DASHBOARD_USERNAME
+            and auth.password == DASHBOARD_PASSWORD
+        )
+        if not ok:
             return _auth_challenge()
         return None
 
@@ -130,12 +150,34 @@ def check_dashboard_auth():
 @app.get("/login")
 def login():
     """브라우저 Basic 인증 팝업을 띄우고, 성공하면 대시보드로 돌려보낸다."""
-    return Response(
+    resp = Response(
         '<meta charset="utf-8"><meta http-equiv="refresh" content="0; url=/">'
         "로그인되었습니다. 이동 중...",
         200,
         {"Content-Type": "text/html; charset=utf-8"},
     )
+    resp.delete_cookie(LOGOUT_COOKIE, path="/")
+    return resp
+
+
+@app.post("/api/logout")
+def logout():
+    """
+    로그아웃 표시 쿠키를 심는다.
+
+    Basic 인증 특성상 브라우저는 이후에도 자격증명을 계속 보내지만,
+    _is_authed()가 이 쿠키를 먼저 확인하고 미인증으로 처리한다.
+    다시 로그인하려면 /login 으로 가면 되고, 그때 이 쿠키가 지워진다.
+    """
+    resp = jsonify({"ok": True, "authenticated": False})
+    resp.set_cookie(
+        LOGOUT_COOKIE, "1",
+        max_age=60 * 60 * 24 * 365,
+        httponly=True,
+        samesite="Lax",
+        path="/",
+    )
+    return resp
 
 
 @app.get("/api/whoami")
