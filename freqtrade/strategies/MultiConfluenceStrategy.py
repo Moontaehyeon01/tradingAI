@@ -35,7 +35,12 @@ MaRsiAdxStrategy의 업그레이드 버전.
    (freqtrade/config_trend_futures.json 참고)
 """
 
-from freqtrade.strategy import IStrategy, IntParameter, DecimalParameter
+from freqtrade.strategy import (
+    IStrategy,
+    IntParameter,
+    DecimalParameter,
+    stoploss_from_absolute,
+)
 from freqtrade.persistence import Trade
 from pandas import DataFrame
 import talib.abstract as ta
@@ -53,11 +58,41 @@ class MultiConfluenceStrategy(IStrategy):
     # 이전 로컬 실험 MultiConfluenceStrategyV2 참고. 검증 끝나서 본 파일에 병합함)
     trend_ema_period = 100
 
-    stoploss = -0.15  # ATR 커스텀 stoploss의 안전망(하한선) 역할
+    # ------------------------------------------------------------------
+    # 손절 설정 — 단위 주의!
+    #
+    # freqtrade의 stoploss 값은 "가격 이동폭"이 아니라 "레버리지 적용 후 계좌
+    # 손실률" 단위다 (adjust_stop_loss: new_loss = price * (1 - |stoploss/leverage|)).
+    # config의 leverage=5 기준이므로  stoploss=-0.45  ->  가격 9% 이동.
+    #
+    # 또한 freqtrade는 진입 시점에 이 고정값으로 손절선을 먼저 잡고, 그 뒤
+    # custom_stoploss는 "더 타이트하게"만 조일 수 있다(느슨하게는 못 함).
+    # 따라서 이 값은 custom_stoploss가 쓸 수 있는 최대폭(STOP_MAX_PCT)보다
+    # 반드시 느슨해야 한다. 그렇지 않으면 ATR 손절이 통째로 무력화된다.
+    #   -> STOP_MAX_PCT(14%) * 5배 = 0.70  이므로 여유를 둬서 -0.80
+    # ------------------------------------------------------------------
+    stoploss = -0.80
 
-    trailing_stop = True
-    trailing_stop_positive = 0.02
-    trailing_stop_positive_offset = 0.04
+    use_custom_stoploss = True
+
+    # custom_stoploss가 실제로 쓰는 손절폭 (전부 "가격 이동폭" 기준, 레버리지 무관)
+    STOP_MIN_PCT = 0.02    # 추세추종은 평균회귀보다 손절을 여유있게
+    STOP_MAX_PCT = 0.14
+    STOP_DEFAULT_PCT = 0.05  # ATR을 못 구했을 때 폴백
+
+    # 트레일링 스탑 비활성화.
+    # 이 값들도 stoploss와 똑같이 "레버리지 적용 후" 단위라서, 기존 설정
+    # (positive=0.02, offset=0.04)은 leverage=5 기준으로 환산하면
+    # "가격이 0.8% 오르면 그때부터 0.4% 트레일링"이라는 말도 안 되게 타이트한
+    # 설정이었음 -> 모든 수익 거래를 푼돈에서 잘라먹고 있었다.
+    # 5.8년 연속 백테스트 비교 (ATR 배수 4.0 고정):
+    #   기존 트레일링 유지    -35.54%
+    #   레버리지 보정 트레일링 -13.93%
+    #   트레일링 끔           -11.77%   <- 채택
+    # 손절은 custom_stoploss(ATR 기반)가 전담한다.
+    trailing_stop = False
+    trailing_stop_positive = None
+    trailing_stop_positive_offset = 0.0
     trailing_only_offset_is_reached = True
 
     use_exit_signal = True
@@ -83,7 +118,9 @@ class MultiConfluenceStrategy(IStrategy):
     adx_threshold = IntParameter(20, 30, default=25, space="buy")
 
     atr_period = IntParameter(10, 20, default=14, space="buy")
-    atr_stoploss_multiplier = DecimalParameter(1.5, 4.0, default=2.5, space="sell")
+    # 탐색 범위 대폭 확대 (이유는 MeanReversionStrategy 동일 파라미터 주석 참고 —
+    # use_custom_stoploss가 꺼져 있어서 지금까지 한 번도 실제로 작동한 적이 없는 파라미터)
+    atr_stoploss_multiplier = DecimalParameter(1.5, 8.0, default=4.0, space="sell")
 
     # ------------------------------------------------------------------
     # XRP 전용 하이퍼옵트 파라미터
@@ -112,7 +149,7 @@ class MultiConfluenceStrategy(IStrategy):
     xrp_adx_threshold = IntParameter(20, 30, default=30, space="buy")
 
     xrp_atr_period = IntParameter(10, 20, default=19, space="buy")
-    xrp_atr_stoploss_multiplier = DecimalParameter(1.5, 4.0, default=3.519, space="sell")
+    xrp_atr_stoploss_multiplier = DecimalParameter(1.5, 8.0, default=4.0, space="sell")
 
     def _p(self, name: str, pair: str):
         """파라미터 값을 페어에 맞게 반환 (XRP면 xrp_<name> 하이퍼옵트 파라미터, 아니면 기본값)"""
@@ -301,18 +338,36 @@ class MultiConfluenceStrategy(IStrategy):
         **kwargs,
     ) -> float:
 
+        """
+        진입 시점 ATR로 "절대 손절가"를 고정하고, 그걸 freqtrade가 요구하는
+        "현재가 대비 비율"로 변환해서 반환한다.
+        (반환값 단위/기준가에 대한 자세한 설명은 MeanReversionStrategy.custom_stoploss 주석 참고)
+        """
+        stop_distance_pct = self.STOP_DEFAULT_PCT
+
         dataframe, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.timeframe)
-        if dataframe is None or len(dataframe) == 0:
-            return self.stoploss
+        if dataframe is not None and len(dataframe) > 0 and trade.open_rate:
+            entry_candles = dataframe.loc[dataframe["date"] <= trade.open_date_utc]
+            row = entry_candles.iloc[-1] if len(entry_candles) else dataframe.iloc[-1]
+            atr = row["atr"]
+            if atr and not np.isnan(atr):
+                stop_distance_pct = (
+                    atr * self._p("atr_stoploss_multiplier", pair)
+                ) / trade.open_rate
 
-        last_candle = dataframe.iloc[-1]
-        atr = last_candle["atr"]
+        stop_distance_pct = min(max(stop_distance_pct, self.STOP_MIN_PCT), self.STOP_MAX_PCT)
 
-        if atr == 0 or np.isnan(atr):
-            return self.stoploss
+        if trade.is_short:
+            stop_price = trade.open_rate * (1 + stop_distance_pct)
+        else:
+            stop_price = trade.open_rate * (1 - stop_distance_pct)
 
-        atr_stop_distance = (atr * self._p("atr_stoploss_multiplier", pair)) / current_rate
-        return max(-atr_stop_distance, self.stoploss)
+        return stoploss_from_absolute(
+            stop_price,
+            current_rate,
+            is_short=trade.is_short,
+            leverage=trade.leverage or 1.0,
+        )
 
     # ------------------------------------------------------------------
     # ATR 기반 포지션 사이징 (MaRsiAdxStrategy와 동일 로직)

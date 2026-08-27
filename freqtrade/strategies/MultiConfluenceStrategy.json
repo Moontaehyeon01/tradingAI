@@ -2,10 +2,10 @@
   "strategy_name": "MultiConfluenceStrategy",
   "params": {
     "trailing": {
-      "trailing_stop": true,
-      "trailing_stop_positive": 0.02,
-      "trailing_stop_positive_offset": 0.04,
-      "trailing_only_offset_is_reached": true
+      "trailing_stop": false,
+      "trailing_stop_positive": null,
+      "trailing_stop_positive_offset": 0.0,
+      "trailing_only_offset_is_reached": false
     },
     "max_open_trades": {
       "max_open_trades": 4
@@ -49,7 +49,7 @@
       "2208": 0
     },
     "stoploss": {
-      "stoploss": -0.228
+      "stoploss": -0.8
     }
   },
   "ft_stratparam_v": 1,
