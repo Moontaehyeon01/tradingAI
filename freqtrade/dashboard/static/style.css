@@ -654,6 +654,18 @@ table.pos-table { width: 100%; border-collapse: collapse; }
   /* 칩이 절대배치라 값이 칩 밑으로 들어가지 않게 위쪽 여백 */
   .stat-body { padding-top: 10px; }
 
+  /* 알림 모달: 데스크톱에서는 종 버튼 기준 absolute + 폭 360px 인데,
+     폰에서는 버튼이 화면 오른쪽 끝에 있어서 왼쪽 150px 가 화면 밖으로 잘려나갔다.
+     -> 화면 기준 고정 배치로 바꾸고 좌우 여백만 남긴다 */
+  .alert-modal {
+    position: fixed;
+    top: 58px;
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-height: min(420px, calc(100vh - 150px));
+  }
+
   .panel { padding: 14px; }
   .panel-title { font-size: 14px; }
   .chart-canvas-wrap { height: 210px; }
