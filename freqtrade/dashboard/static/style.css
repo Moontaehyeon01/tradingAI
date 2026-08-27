@@ -463,11 +463,31 @@ body {
 .bot-title .dot.ok { background: var(--green); box-shadow: 0 0 6px var(--green); }
 .bot-title .dot.err { background: var(--red); }
 
-.badge-row { display: flex; gap: 8px; }
+.badge-row { display: flex; gap: 8px; align-items: center; }
 .lev-badge {
   font-family: var(--font-mono); font-size: 10.5px; font-weight: 700;
   color: var(--orange); background: rgba(245, 158, 11, 0.14);
   padding: 3px 9px; border-radius: 20px;
+}
+
+/* 봇 가동 상태 배지 + 시작/정지 버튼 */
+.state-badge {
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 700;
+  padding: 3px 9px; border-radius: 20px;
+}
+.state-badge.on { color: var(--green); background: rgba(16, 185, 129, 0.14); }
+.state-badge.off { color: var(--text-dim); background: rgba(139, 144, 160, 0.16); }
+
+.power-btn {
+  font-family: inherit; font-size: 11px; font-weight: 700;
+  padding: 4px 12px; border-radius: 20px; cursor: pointer;
+  border: 1px solid transparent; transition: filter .15s, opacity .15s;
+}
+.power-btn:hover:not(:disabled) { filter: brightness(1.18); }
+.power-btn:disabled { opacity: .55; cursor: default; }
+.power-btn.start { color: #fff; background: var(--green); }
+.power-btn.stop {
+  color: var(--red); background: transparent; border-color: var(--red);
 }
 
 .mini-stats {

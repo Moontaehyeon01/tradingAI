@@ -146,6 +146,9 @@ def fetch_bot_summary(bot: dict) -> dict:
             {
                 "connected": True,
                 "dry_run": config.get("dry_run", True),
+                # freqtrade의 봇 상태: "running" | "stopped" | "paused"
+                # 대시보드의 시작/정지 버튼이 이 값을 보고 표시를 바꾼다
+                "state": config.get("state", "unknown"),
                 "balance_total": balance_bot_owned,
                 "starting_capital": balance.get("starting_capital", 0),
                 "profit_closed_abs": profit.get("profit_closed_coin", 0),
@@ -195,6 +198,56 @@ def fetch_bot_summary(bot: dict) -> dict:
     except Exception as exc:  # noqa: BLE001
         out["error"] = str(exc)
     return out
+
+
+def post_bot(base_url: str, path: str):
+    resp = requests.post(f"{base_url}{path}", auth=(USERNAME, PASSWORD), timeout=6)
+    resp.raise_for_status()
+    return resp.json()
+
+
+@app.post("/api/bots/<bot_id>/<action>")
+def api_bot_control(bot_id: str, action: str):
+    """
+    봇 시작/정지.
+      start : 자동매매 시작 (신규 진입 + 청산 관리 모두 재개)
+      stop  : 자동매매 정지. 신규 진입이 멈춘다.
+              ※ 주의: 이미 열려 있는 포지션이 있으면 그 포지션의 손절/익절 관리도
+                 같이 멈춘다. 열린 포지션이 있는 상태로 정지하면 그 포지션은
+                 사용자가 직접 관리해야 한다.
+    """
+    if action not in ("start", "stop"):
+        return jsonify({"ok": False, "error": "지원하지 않는 동작입니다"}), 400
+
+    bot = next((b for b in BOTS if b["id"] == bot_id), None)
+    if bot is None:
+        return jsonify({"ok": False, "error": "봇을 찾을 수 없습니다"}), 404
+
+    try:
+        # 정지 요청인데 열린 포지션이 있으면 경고를 같이 돌려준다(막지는 않음)
+        warning = None
+        if action == "stop":
+            try:
+                open_trades = call_bot(bot["url"], "/api/v1/status")
+                if open_trades:
+                    pairs = ", ".join(t["pair"] for t in open_trades)
+                    warning = (
+                        f"열린 포지션 {len(open_trades)}건({pairs})의 손절/익절 관리도 "
+                        f"함께 멈춥니다. 직접 관리하셔야 합니다."
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+
+        result = post_bot(bot["url"], f"/api/v1/{action}")
+        state = "running" if action == "start" else "stopped"
+        return jsonify({
+            "ok": True,
+            "state": state,
+            "message": result.get("status", ""),
+            "warning": warning,
+        })
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)}), 502
 
 
 @app.get("/api/summary")
