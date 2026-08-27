@@ -181,12 +181,15 @@
             <div class="panel-sub">최근 체결 기준</div>
           </div>
         </div>
-        <table class="history-table" id="historyTable">
-          <thead>
-            <tr><th>전략</th><th>페어</th><th>방향</th><th>손익%</th><th>손익$</th><th>청산사유</th><th>시각</th></tr>
-          </thead>
-          <tbody><tr><td colspan="7" class="empty-row">불러오는 중…</td></tr></tbody>
-        </table>
+        <!-- 좁은 화면에서 표가 페이지 전체를 옆으로 밀지 않도록 표만 따로 가로 스크롤 -->
+        <div class="table-scroll">
+          <table class="history-table" id="historyTable">
+            <thead>
+              <tr><th>전략</th><th>페어</th><th>방향</th><th>손익%</th><th>손익$</th><th>청산사유</th><th>시각</th></tr>
+            </thead>
+            <tbody><tr><td colspan="7" class="empty-row">불러오는 중…</td></tr></tbody>
+          </table>
+        </div>
       </section>
 
     </section>
@@ -198,6 +201,18 @@
 
   </div>
 </div>
+
+<!-- 모바일 하단 네비게이션.
+     좁은 화면에서는 사이드바가 숨겨지는데 그 안에 화면 이동 메뉴가 들어 있어서
+     모바일에서는 섹션 이동이 아예 불가능했다. 같은 .nav-item / data-target 을 쓰므로
+     기존 클릭 핸들러가 그대로 동작한다. -->
+<nav class="mobile-nav">
+  <a class="nav-item active" data-target="section-overview"><span class="nav-icon">▦</span>개요</a>
+  <a class="nav-item" data-target="section-charts"><span class="nav-icon">📈</span>성과</a>
+  <a class="nav-item" data-target="section-positions"><span class="nav-icon">⇄</span>포지션</a>
+  <a class="nav-item" data-target="section-history"><span class="nav-icon">⏱</span>내역</a>
+  <a class="nav-item" data-target="section-market"><span class="nav-icon">◎</span>시세</a>
+</nav>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="app.js"></script>
