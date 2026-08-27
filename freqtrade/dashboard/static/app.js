@@ -177,6 +177,23 @@ function renderStats(summary) {
   eqChip.textContent = fmtPct(summary.combined.total_profit_pct);
   eqChip.className = `stat-chip ${chipClass(summary.combined.total_profit_pct)}`;
 
+  // 봇이 관리하지 않는 포지션(직접 잡은 것)이 있으면 총자산 아래에 표시.
+  // 계좌 잔고 대부분이 거기 묶여 있을 수 있어서, 안 보여주면 "봇 잔고가 왜 이렇게
+  // 적지?" 하고 헷갈리게 된다.
+  const unm = summary.combined.unmanaged_positions || [];
+  const unmEl = document.getElementById("statUnmanaged");
+  if (unmEl) {
+    if (unm.length) {
+      const txt = unm
+        .map((p) => `${p.pair.split("/")[0]} ${p.side === "short" ? "숏" : "롱"} $${(p.est_stake || 0).toFixed(0)}`)
+        .join(", ");
+      unmEl.textContent = `봇 미관리 포지션: ${txt}`;
+      unmEl.hidden = false;
+    } else {
+      unmEl.hidden = true;
+    }
+  }
+
   document.getElementById("statPnl").textContent =
     `$${fmtUsd(summary.combined.total_profit_abs)}`;
   const pnlChip = document.getElementById("statPnlChip");
@@ -197,11 +214,16 @@ function renderStats(summary) {
 
 /* ---------------- Equity chart ---------------- */
 
+// 봇별 그래프 색상. 봇이 추가/교체돼도 순서대로 배정된다.
+const BOT_COLORS = ["#5b8def", "#f59e0b", "#8b5cf6", "#10b981", "#f43f5e"];
+
+function hexToRgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
 function renderEquityChart(summary) {
   const ctx = document.getElementById("equityChart");
-  const bot0 = summary.bots[0]?.daily || [];
-  const bot1 = summary.bots[1]?.daily || [];
-  const labels = bot0.map((d) => d.date.slice(5));
 
   const cumulative = (daily) => {
     let acc = 0;
@@ -217,68 +239,83 @@ function renderEquityChart(summary) {
     });
   };
 
-  const data0 = cumulative(bot0);
-  const data1 = cumulative(bot1);
-  const pct0 = cumulativePct(bot0);
-  const pct1 = cumulativePct(bot1);
+  // 봇 목록을 그대로 따라가도록 동적으로 구성한다.
+  // (예전엔 bots[0]="추세추종", bots[1]="평균회귀"로 하드코딩돼 있어서,
+  //  전략을 교체하면 새 전략이 옛 이름으로 표시되고 없는 봇은 빈 선으로 남았다)
+  const series = summary.bots
+    .filter((b) => b.connected)
+    .map((b, i) => ({
+      label: b.name.replace(/\s*\(.*\)\s*/, "") || b.id,
+      color: BOT_COLORS[i % BOT_COLORS.length],
+      daily: b.daily || [],
+    }));
 
-  // 드라이런 시작 직후엔 일별 손익이 전부 0이라 그래프가 텅 빈 직선으로 보여서
+  const longest = series.reduce(
+    (best, s) => (s.daily.length > best.length ? s.daily : best),
+    []
+  );
+  const labels = longest.map((d) => d.date.slice(5));
+
+  // 범례도 실제 봇에 맞춰 다시 그림
+  const legendEl = document.getElementById("equityLegend");
+  if (legendEl) {
+    legendEl.innerHTML = series
+      .map(
+        (s) =>
+          `<span class="legend-item"><i class="dotcolor" style="background:${s.color}"></i>${s.label}</span>`
+      )
+      .join("");
+  }
+
+  const datasets = series.map((s) => {
+    const grad = ctx.getContext("2d").createLinearGradient(0, 0, 0, 240);
+    grad.addColorStop(0, hexToRgba(s.color, 0.33));
+    grad.addColorStop(1, hexToRgba(s.color, 0));
+    return {
+      label: s.label,
+      data: cumulative(s.daily),
+      pctData: cumulativePct(s.daily),
+      borderColor: s.color,
+      backgroundColor: grad,
+      fill: true,
+      tension: 0.4,
+      pointRadius: 0,
+      pointHoverRadius: 4,
+      borderWidth: 2,
+    };
+  });
+
+  // 시작 직후엔 일별 손익이 전부 0이라 그래프가 텅 빈 직선으로 보여서
   // 마치 깨진 것처럼 보임 -> 의미 있는 데이터가 없으면 안내 문구로 대체
-  const hasSignal = [...data0, ...data1].some((v) => Math.abs(v) > 0.0001);
+  const hasSignal = datasets.some((d) => d.data.some((v) => Math.abs(v) > 0.0001));
   const emptyState = document.getElementById("equityEmptyState");
   emptyState.hidden = hasSignal;
   ctx.style.visibility = hasSignal ? "visible" : "hidden";
   if (!hasSignal && !equityChart) return;
 
-  if (equityChart) {
+  // 봇 구성이 바뀌면(개수/이름) 차트를 새로 만든다
+  const sameShape =
+    equityChart &&
+    equityChart.data.datasets.length === datasets.length &&
+    equityChart.data.datasets.every((d, i) => d.label === datasets[i].label);
+
+  if (sameShape) {
     equityChart.data.labels = labels;
-    equityChart.data.datasets[0].data = data0;
-    equityChart.data.datasets[0].pctData = pct0;
-    equityChart.data.datasets[1].data = data1;
-    equityChart.data.datasets[1].pctData = pct1;
+    datasets.forEach((d, i) => {
+      equityChart.data.datasets[i].data = d.data;
+      equityChart.data.datasets[i].pctData = d.pctData;
+    });
     equityChart.update("none");
     return;
   }
-
-  const gradBlue = ctx.getContext("2d").createLinearGradient(0, 0, 0, 240);
-  gradBlue.addColorStop(0, "rgba(91, 141, 239, 0.35)");
-  gradBlue.addColorStop(1, "rgba(91, 141, 239, 0)");
-
-  const gradOrange = ctx.getContext("2d").createLinearGradient(0, 0, 0, 240);
-  gradOrange.addColorStop(0, "rgba(245, 158, 11, 0.3)");
-  gradOrange.addColorStop(1, "rgba(245, 158, 11, 0)");
+  if (equityChart) {
+    equityChart.destroy();
+    equityChart = null;
+  }
 
   equityChart = new Chart(ctx, {
     type: "line",
-    data: {
-      labels,
-      datasets: [
-        {
-          label: "추세추종",
-          data: data0,
-          pctData: pct0,
-          borderColor: "#5b8def",
-          backgroundColor: gradBlue,
-          fill: true,
-          tension: 0.4,
-          pointRadius: 0,
-          pointHoverRadius: 4,
-          borderWidth: 2,
-        },
-        {
-          label: "평균회귀",
-          data: data1,
-          pctData: pct1,
-          borderColor: "#f59e0b",
-          backgroundColor: gradOrange,
-          fill: true,
-          tension: 0.4,
-          pointRadius: 0,
-          pointHoverRadius: 4,
-          borderWidth: 2,
-        },
-      ],
-    },
+    data: { labels, datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -402,6 +439,36 @@ function renderOpenTrades(trades, filter) {
     </div>`;
 }
 
+/* ---------------- 로그인 상태 ----------------
+   대시보드 열람은 로그인 없이 가능하고, 봇 시작/정지 같은 조작만 로그인이 필요하다.
+   서버는 HTTP Basic을 쓰므로, /login 으로 이동하면 브라우저가 인증 팝업을 띄우고
+   성공하면 대시보드로 되돌아온다. 이후 브라우저가 자격증명을 계속 붙여준다. */
+let isAuthed = false;
+
+function goLogin() {
+  window.location.href = "/login";
+}
+
+async function refreshAuthState() {
+  try {
+    const res = await fetch("/api/whoami", { cache: "no-store" });
+    const data = await res.json();
+    isAuthed = !!data.authenticated;
+  } catch {
+    isAuthed = false;
+  }
+  const el = document.getElementById("authControl");
+  if (el) {
+    el.innerHTML = isAuthed
+      ? `<span class="auth-badge on">로그인됨</span>`
+      : `<button class="auth-btn" id="loginBtn">로그인</button>`;
+  }
+}
+
+document.addEventListener("click", (e) => {
+  if (e.target.closest("#loginBtn")) goLogin();
+});
+
 /* 봇 시작/정지 버튼.
    freqtrade의 state는 running / stopped / paused 세 가지.
    running이 아니면 "정지됨"으로 보고 시작 버튼을 띄운다. */
@@ -409,12 +476,20 @@ function renderBotPower(bot) {
   const running = bot.state === "running";
   const label = running ? "정지" : "시작";
   const cls = running ? "power-btn stop" : "power-btn start";
+  // 로그인 안 했으면 버튼은 보이되 눌리지 않는다(열람은 누구나, 조작은 로그인)
+  const locked = !isAuthed;
+  const title = locked ? "로그인이 필요합니다" : "";
   return `
     <span class="state-badge ${running ? "on" : "off"}">${running ? "가동중" : "정지"}</span>
-    <button class="${cls}" data-bot="${bot.id}" data-action="${running ? "stop" : "start"}">${label}</button>`;
+    <button class="${cls}" data-bot="${bot.id}" data-action="${running ? "stop" : "start"}"
+            ${locked ? "disabled" : ""} title="${title}">${locked ? "🔒 " : ""}${label}</button>`;
 }
 
 async function onBotPowerClick(botId, action) {
+  if (!isAuthed) {
+    if (window.confirm("봇 조작은 로그인이 필요합니다.\n로그인하시겠습니까?")) goLogin();
+    return;
+  }
   const isStop = action === "stop";
   const msg = isStop
     ? "봇을 정지하시겠습니까?\n\n신규 진입이 멈춥니다. 열린 포지션이 있으면 그 포지션의 손절/익절 관리도 함께 멈추므로 직접 관리하셔야 합니다."
@@ -426,7 +501,10 @@ async function onBotPowerClick(botId, action) {
   try {
     const res = await fetch(`/api/bots/${botId}/${action}`, { method: "POST" });
     const data = await res.json();
-    if (!data.ok) {
+    if (res.status === 401) {
+      isAuthed = false;
+      if (window.confirm("로그인이 필요합니다.\n로그인하시겠습니까?")) goLogin();
+    } else if (!data.ok) {
       window.alert(`실패: ${data.error || "알 수 없는 오류"}`);
     } else if (data.warning) {
       window.alert(`정지했습니다.\n\n주의: ${data.warning}`);
@@ -646,7 +724,10 @@ async function refresh() {
   ]);
 
   const failures = [summaryRes, tickersRes, alertsRes].filter((r) => r.status === "rejected");
+  // 조회용 API는 이제 로그인 없이도 열리므로, 여기서 401이 나면 서버 설정 문제다.
   const authFailed = failures.some((r) => r.reason?.status === 401);
+
+  await refreshAuthState();
 
   if (summaryRes.status === "fulfilled") {
     const summary = summaryRes.value;
