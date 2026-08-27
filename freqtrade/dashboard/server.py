@@ -86,23 +86,62 @@ def record_notification(entry: dict):
 app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="")
 
 
+def _is_authed() -> bool:
+    auth = request.authorization
+    return bool(
+        auth and auth.username == DASHBOARD_USERNAME and auth.password == DASHBOARD_PASSWORD
+    )
+
+
+def _auth_challenge():
+    return Response(
+        "인증이 필요합니다.",
+        401,
+        {"WWW-Authenticate": 'Basic realm="TradeOps Dashboard"'},
+    )
+
+
 @app.before_request
 def check_dashboard_auth():
-    # /webhook은 freqtrade 컨테이너가 부르는 경로라 브라우저 로그인과는 별도로
-    # WEBHOOK_SECRET으로 검증함 (아래 webhook_relay 함수 안에서 체크)
+    """
+    열람은 로그인 없이, 조작은 로그인해야만.
+
+      - GET/HEAD (대시보드 화면, 조회용 API, 정적 파일) -> 인증 불필요
+      - 그 외 메서드(POST 등: 봇 시작/정지) -> 인증 필수
+      - /webhook 은 freqtrade 컨테이너가 부르는 경로라 브라우저 로그인과 무관하게
+        WEBHOOK_SECRET으로 따로 검증함 (webhook_relay 함수 안에서 체크)
+      - /login 은 브라우저 Basic 인증 팝업을 띄우기 위한 전용 경로
+    """
     if request.path == "/webhook":
         return None
 
-    # 정적 파일(style.css, app.js 등)까지 전부 포함해서 모든 요청에 인증 요구
-    # (Flask의 자동 static 라우트는 개별 @app.get 데코레이터를 안 거쳐가서
-    #  전역 before_request로 막아야 빠짐없이 보호됨)
-    auth = request.authorization
-    if not auth or auth.username != DASHBOARD_USERNAME or auth.password != DASHBOARD_PASSWORD:
-        return Response(
-            "인증이 필요합니다.",
-            401,
-            {"WWW-Authenticate": 'Basic realm="TradeOps Dashboard"'},
-        )
+    if request.path == "/login":
+        if not _is_authed():
+            return _auth_challenge()
+        return None
+
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+
+    if not _is_authed():
+        return jsonify({"ok": False, "error": "로그인이 필요합니다."}), 401
+
+
+@app.get("/login")
+def login():
+    """브라우저 Basic 인증 팝업을 띄우고, 성공하면 대시보드로 돌려보낸다."""
+    return Response(
+        '<meta charset="utf-8"><meta http-equiv="refresh" content="0; url=/">'
+        "로그인되었습니다. 이동 중...",
+        200,
+        {"Content-Type": "text/html; charset=utf-8"},
+    )
+
+
+@app.get("/api/whoami")
+def whoami():
+    """프론트가 로그인 여부를 알아내 버튼 활성/비활성을 결정하는 데 사용."""
+    return jsonify({"authenticated": _is_authed()})
 
 
 def call_bot(base_url: str, path: str, params: dict | None = None):
@@ -142,9 +181,29 @@ def fetch_bot_summary(bot: dict) -> dict:
         )
         balance_bot_owned = own_free + own_positions_margin
 
+        # 계좌 전체 실제 잔고(봇 소유 여부와 무관). "총자산" 표시에 쓴다.
+        # balance_bot_owned는 신규 봇이라 거래 이력이 없으면 0에 가깝게 나오는데,
+        # 그걸 총자산으로 보여주면 실제 계좌에 돈이 있는데도 0으로 보인다.
+        account_total = balance.get("total", 0) or 0
+
+        # 봇이 관리하지 않는 포지션(사용자가 직접 잡은 것 등).
+        # 계좌 잔고 대부분이 여기 묶여 있을 수 있어서 따로 보여준다.
+        unmanaged = [
+            {
+                "pair": c.get("currency"),
+                "side": c.get("side"),
+                "position": c.get("position"),
+                "est_stake": c.get("est_stake"),
+            }
+            for c in currencies
+            if c.get("is_position") and not c.get("is_bot_managed")
+        ]
+
         out.update(
             {
                 "connected": True,
+                "account_total": account_total,
+                "unmanaged_positions": unmanaged,
                 "dry_run": config.get("dry_run", True),
                 # freqtrade의 봇 상태: "running" | "stopped" | "paused"
                 # 대시보드의 시작/정지 버튼이 이 값을 보고 표시를 바꾼다
@@ -253,9 +312,22 @@ def api_bot_control(bot_id: str, action: str):
 @app.get("/api/summary")
 def api_summary():
     bots = [fetch_bot_summary(b) for b in BOTS]
-    total_equity = sum(b.get("balance_total", 0) for b in bots if b.get("connected"))
-    total_starting = sum(b.get("starting_capital", 0) for b in bots if b.get("connected"))
-    total_profit_abs = sum(b.get("profit_all_abs", 0) for b in bots if b.get("connected"))
+    connected = [b for b in bots if b.get("connected")]
+
+    # 총자산: 모든 봇이 같은 바이낸스 계좌를 공유하므로 합산하면 중복 계산이 된다.
+    # 계좌 전체 잔고를 한 번만 취한다(봇마다 같은 값을 보고함).
+    total_equity = max((b.get("account_total", 0) for b in connected), default=0)
+
+    # 손익은 봇별로 각자 관리하는 거래에서 나오므로 합산이 맞다.
+    total_starting = sum(b.get("starting_capital", 0) for b in connected)
+    total_profit_abs = sum(b.get("profit_all_abs", 0) for b in connected)
+
+    # 봇이 관리하지 않는 포지션(직접 잡은 것)을 페어 기준으로 중복 제거
+    unmanaged = {}
+    for b in connected:
+        for p in b.get("unmanaged_positions", []):
+            unmanaged[p["pair"]] = p
+
     return jsonify(
         {
             "bots": bots,
@@ -264,6 +336,7 @@ def api_summary():
                 "total_starting": total_starting,
                 "total_profit_abs": total_profit_abs,
                 "total_profit_pct": (total_profit_abs / total_starting * 100) if total_starting else 0,
+                "unmanaged_positions": list(unmanaged.values()),
             },
             "server_time": int(time.time()),
         }
