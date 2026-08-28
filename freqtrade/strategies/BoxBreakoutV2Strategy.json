@@ -1,0 +1,26 @@
+{
+  "strategy_name": "BoxBreakoutV2Strategy",
+  "params": {
+    "buy": {
+      "box_period": 12,
+      "box_max_width": 0.04
+    },
+    "sell": {
+      "max_stop_pct": 0.05,
+      "max_hold_candles": 48
+    },
+    "roi": {
+      "0": 0.35
+    },
+    "stoploss": {
+      "stoploss": -0.5
+    },
+    "trailing": {
+      "trailing_stop": false,
+      "trailing_stop_positive": null,
+      "trailing_stop_positive_offset": 0.0,
+      "trailing_only_offset_is_reached": false
+    }
+  },
+  "ft_stratparam_v": 1
+}
