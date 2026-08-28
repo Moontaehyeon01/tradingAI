@@ -126,6 +126,29 @@ services:
       --config /freqtrade/user_data/config.json
       --strategy BoxBreakoutStrategy
 
+  # --- BoxBreakoutV2: 박스 경계 손절 + 익절 20% + 거래대금 상위 20개 자동 선정 ---
+  # 검증 전이므로 config가 dry_run=true, initial_state=stopped 로 되어 있다.
+  # 기동해도 매매를 시작하지 않으며, 대시보드 버튼으로만 시작된다.
+  freqtrade-boxbreakout-v2-futures:
+    image: freqtradeorg/freqtrade:stable
+    container_name: freqtrade-boxbreakout-v2-futures
+    restart: unless-stopped
+    profiles: ["futures"]
+    env_file:
+      - ../.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config_boxbreakout_v2_futures.json:/freqtrade/user_data/config.json
+      - ./strategies:/freqtrade/user_data/strategies
+      - ./user_data:/freqtrade/user_data
+    ports:
+      - "127.0.0.1:8086:8086"
+    command: >
+      trade
+      --config /freqtrade/user_data/config.json
+      --strategy BoxBreakoutV2Strategy
+
   # 예전엔 XRP를 별도 봇 인스턴스(freqtrade-trend-xrp-futures 등)로 분리했었으나,
   # 계좌 잔고를 추세추종/평균회귀 계열끼리 공유하기 위해 통합함. 지금은
   # MultiConfluenceStrategy/MeanReversionStrategy 안에서 페어가 XRP일 때만
