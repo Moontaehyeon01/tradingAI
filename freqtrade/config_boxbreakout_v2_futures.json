@@ -1,0 +1,144 @@
+{
+    "max_open_trades": 5,
+    "stake_currency": "USDT",
+    "stake_amount": "unlimited",
+    "tradable_balance_ratio": 0.5,
+    "fiat_display_currency": "USD",
+    "timeframe": "1h",
+    "dry_run": true,
+    "dry_run_wallet": 1000,
+    "db_url": "sqlite:///user_data/boxbreakout_v2_live.sqlite",
+    "cancel_open_orders_on_exit": false,
+    "trading_mode": "futures",
+    "margin_mode": "isolated",
+    "leverage": 5,
+    "unfilledtimeout": {
+        "entry": 10,
+        "exit": 10,
+        "exit_timeout_count": 0,
+        "unit": "minutes"
+    },
+    "entry_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1,
+        "check_depth_of_market": {
+            "enabled": false,
+            "bids_to_ask_delta": 1
+        }
+    },
+    "exit_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1
+    },
+    "exchange": {
+        "name": "binance",
+        "key": "",
+        "secret": "",
+        "ccxt_config": {
+            "options": {
+                "defaultType": "future"
+            }
+        },
+        "ccxt_async_config": {
+            "options": {
+                "defaultType": "future"
+            }
+        },
+        "pair_whitelist": [],
+        "pair_blacklist": [
+            "(BUSD|USDC|FDUSD|TUSD)/.*",
+            ".*(UP|DOWN|BEAR|BULL)/.*"
+        ]
+    },
+    "pairlists": [
+        {
+            "method": "VolumePairList",
+            "number_assets": 20,
+            "sort_key": "quoteVolume",
+            "min_value": 0,
+            "refresh_period": 1800
+        },
+        {
+            "method": "AgeFilter",
+            "min_days_listed": 30
+        },
+        {
+            "method": "VolatilityFilter",
+            "lookback_days": 10,
+            "min_volatility": 0.01,
+            "max_volatility": 0.75,
+            "refresh_period": 1800
+        }
+    ],
+    "telegram": {
+        "enabled": false,
+        "token": "",
+        "chat_id": "",
+        "notification_settings": {
+            "entry": "off",
+            "entry_fill": "off",
+            "entry_cancel": "off",
+            "exit": "off",
+            "exit_fill": "off",
+            "exit_cancel": "off",
+            "status": "off",
+            "warning": "off",
+            "startup": "off"
+        }
+    },
+    "webhook": {
+        "enabled": true,
+        "url": "http://host.docker.internal:5000/webhook?secret=REPLACE_WITH_WEBHOOK_SECRET",
+        "format": "json",
+        "entry_fill": {
+            "event": "entry_fill",
+            "bot_name": "박스돌파V2",
+            "pair": "{pair}",
+            "direction": "{direction}"
+        },
+        "exit_fill": {
+            "event": "exit_fill",
+            "bot_name": "박스돌파V2",
+            "pair": "{pair}",
+            "direction": "{direction}",
+            "profit_ratio": "{profit_ratio}",
+            "profit_amount": "{profit_amount}",
+            "stake_currency": "{stake_currency}",
+            "exit_reason": "{exit_reason}"
+        },
+        "status": {
+            "event": "status",
+            "bot_name": "박스돌파V2",
+            "status": "{status}"
+        },
+        "warning": {
+            "event": "warning",
+            "bot_name": "박스돌파V2",
+            "status": "{status}"
+        },
+        "startup": {
+            "event": "startup",
+            "bot_name": "박스돌파V2",
+            "status": "{status}"
+        }
+    },
+    "api_server": {
+        "enabled": true,
+        "listen_ip_address": "0.0.0.0",
+        "listen_port": 8086,
+        "verbosity": "error",
+        "enable_openapi": false,
+        "jwt_secret_key": "",
+        "CORS_origins": [],
+        "username": "freqtrader",
+        "password": ""
+    },
+    "bot_name": "binance-boxbreakout-v2-bot",
+    "initial_state": "stopped",
+    "force_entry_enable": false,
+    "internals": {
+        "process_throttle_secs": 5
+    }
+}

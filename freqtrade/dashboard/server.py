@@ -15,6 +15,7 @@ freqtrade REST API를 감싸는 얇은 프록시 겸 정적 파일 서버.
 import json
 import os
 import re
+import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -23,6 +24,11 @@ from pathlib import Path
 import requests
 from flask import Flask, jsonify, request, Response, send_from_directory
 from dotenv import load_dotenv
+
+# 실행 방식(직접 실행 / runpy / systemd)에 따라 이 디렉토리가 sys.path 에
+# 들어가지 않을 수 있어서 명시적으로 넣는다.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import backtest_runner  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT.parent.parent / ".env")
@@ -580,6 +586,46 @@ def webhook_relay():
 @app.get("/api/notifications")
 def api_notifications():
     return jsonify(list(notifications))
+
+
+# ---------------------------------------------------------------------------
+# 백테스트
+#
+# 조회(GET)는 로그인 없이 열려 있지만, 실행(POST)은 before_request 의 규칙에
+# 따라 로그인이 필요하다. 백테스트는 CPU·메모리를 많이 쓰므로 아무나 돌릴 수
+# 있으면 같은 장비의 실전 봇이 영향을 받는다.
+# ---------------------------------------------------------------------------
+@app.get("/api/backtest/meta")
+def api_backtest_meta():
+    """화면 구성에 필요한 정보: 쓸 수 있는 전략·페어와 각 페어의 데이터 범위."""
+    pairs = backtest_runner.available_pairs()
+    ranges = {p: backtest_runner.data_range(p) for p in pairs}
+    covered = [r for r in ranges.values() if r]
+    return jsonify({
+        "strategies": backtest_runner.available_strategies(),
+        "pairs": pairs,
+        "ranges": ranges,
+        "max_pairs": backtest_runner.MAX_PAIRS,
+        # 데이터가 있는 페어들의 공통 구간을 기본 기간으로 제안
+        "suggested_range": {
+            "start": max((r["start"] for r in covered), default=""),
+            "end": min((r["end"] for r in covered), default=""),
+        } if covered else None,
+    })
+
+
+@app.get("/api/backtest/status")
+def api_backtest_status():
+    return jsonify(backtest_runner.status(request.args.get("id") or None))
+
+
+@app.post("/api/backtest/run")
+def api_backtest_run():
+    opts = request.get_json(silent=True) or {}
+    job, err = backtest_runner.start(opts)
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    return jsonify({"ok": True, "id": job["id"]})
 
 
 @app.get("/")

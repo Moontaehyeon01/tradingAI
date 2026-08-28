@@ -35,6 +35,9 @@
       <a class="nav-item" data-target="section-market">
         <span class="nav-icon">◎</span> Market
       </a>
+      <a class="nav-item" data-target="section-backtest">
+        <span class="nav-icon">⚗</span> Backtest
+      </a>
     </nav>
 
     <div class="sidebar-foot">
@@ -192,6 +195,91 @@
         </div>
       </section>
 
+      <section id="section-backtest" class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title">백테스트</div>
+            <div class="panel-sub">전략을 과거 데이터로 검증합니다</div>
+          </div>
+          <span class="state-badge off" id="btEngineState">준비</span>
+        </div>
+
+        <div class="bt-form">
+          <label class="bt-field">
+            <span>전략</span>
+            <select id="btStrategy"></select>
+          </label>
+          <label class="bt-field">
+            <span>레버리지</span>
+            <input id="btLeverage" type="number" min="1" max="20" step="1" value="3">
+          </label>
+          <label class="bt-field">
+            <span>동시 보유</span>
+            <input id="btMaxTrades" type="number" min="1" max="20" step="1" value="5">
+          </label>
+          <label class="bt-field">
+            <span>시작일</span>
+            <input id="btStart" type="date">
+          </label>
+          <label class="bt-field">
+            <span>종료일</span>
+            <input id="btEnd" type="date">
+          </label>
+        </div>
+
+        <div class="bt-form">
+          <label class="bt-field">
+            <span>박스 기간 (봉)</span>
+            <input id="btBoxPeriod" type="number" min="6" max="96" step="1" value="24">
+          </label>
+          <label class="bt-field">
+            <span>박스 최대폭 %</span>
+            <input id="btBoxWidth" type="number" min="0.5" max="15" step="0.1" value="3">
+          </label>
+          <label class="bt-field">
+            <span>익절 % (레버리지 적용)</span>
+            <input id="btRoi" type="number" min="1" max="500" step="1" value="20">
+          </label>
+          <label class="bt-field">
+            <span>손절 상한 % (가격)</span>
+            <input id="btMaxStop" type="number" min="0.5" max="20" step="0.1" value="5">
+          </label>
+          <label class="bt-field">
+            <span>시간청산 (시간, 0=없음)</span>
+            <input id="btMaxHold" type="number" min="0" max="240" step="1" value="0">
+          </label>
+        </div>
+
+        <div class="bt-pairs">
+          <div class="bt-pairs-head">
+            <span>페어 <b id="btPairCount">0</b>개 선택</span>
+            <span>
+              <button class="auth-btn" id="btPairAll">전체</button>
+              <button class="auth-btn" id="btPairNone">해제</button>
+              <button class="auth-btn" id="btPairMajor">주요4개</button>
+            </span>
+          </div>
+          <div class="bt-pair-grid" id="btPairs"></div>
+        </div>
+
+        <div class="bt-actions">
+          <button class="power-btn start" id="btRun">백테스트 실행</button>
+          <span class="bt-note" id="btNote"></span>
+        </div>
+
+        <div id="btResult" class="bt-result" hidden></div>
+
+        <div class="bt-history-wrap" hidden id="btHistoryWrap">
+          <div class="panel-sub" style="margin-bottom:8px">최근 실행</div>
+          <div class="table-scroll">
+            <table class="history-table" id="btHistory">
+              <thead><tr><th>전략</th><th>기간</th><th>레버</th><th>수익률</th><th>낙폭</th><th>거래</th><th>승률</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
     </section>
 
     <footer class="footer">
@@ -212,9 +300,11 @@
   <a class="nav-item" data-target="section-positions"><span class="nav-icon">⇄</span>포지션</a>
   <a class="nav-item" data-target="section-history"><span class="nav-icon">⏱</span>내역</a>
   <a class="nav-item" data-target="section-market"><span class="nav-icon">◎</span>시세</a>
+  <a class="nav-item" data-target="section-backtest"><span class="nav-icon">⚗</span>백테스트</a>
 </nav>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="app.js"></script>
+<script src="backtest.js"></script>
 </body>
 </html>
