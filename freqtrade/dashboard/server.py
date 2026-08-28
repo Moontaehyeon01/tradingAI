@@ -54,7 +54,10 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
 
 BOTS = [
-    {"id": "boxbreakout", "name": "BoxBreakoutStrategy (박스돌파)", "url": "http://127.0.0.1:8085", "leverage": 5},
+    {"id": "boxbreakoutv2", "name": "BoxBreakoutV2 (박스돌파 V2)", "url": "http://127.0.0.1:8086", "leverage": 3},
+    # v1은 2026-08-28 격자탐색 결과 v2 조합(박스12봉/폭4%/익절35%/48h)이 학습·홀드아웃
+    # 양쪽에서 더 나아서 중단함. 되살리려면 아래 줄과 docker compose 서비스를 함께.
+    # {"id": "boxbreakout", "name": "BoxBreakoutStrategy (박스돌파)", "url": "http://127.0.0.1:8085", "leverage": 5},
     # 아래 두 전략은 2026-08-27 검증에서 진입 신호에 통계적 엣지가 없음이 확인되어
     # BoxBreakoutStrategy로 교체됨. 봇을 다시 띄우면 이 줄들을 되살리면 된다.
     # {"id": "trend", "name": "MultiConfluenceStrategy (추세추종)", "url": "http://127.0.0.1:8083", "leverage": 5},
