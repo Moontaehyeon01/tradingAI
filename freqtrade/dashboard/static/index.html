@@ -23,17 +23,17 @@
       <a class="nav-item active" data-target="section-overview">
         <span class="nav-icon">▦</span> Overview
       </a>
-      <a class="nav-item" data-target="section-charts">
-        <span class="nav-icon">📈</span> Performance
+      <a class="nav-item" data-target="section-market">
+        <span class="nav-icon">◎</span> Market
       </a>
       <a class="nav-item" data-target="section-positions">
         <span class="nav-icon">⇄</span> Positions
       </a>
+      <a class="nav-item" data-target="section-charts">
+        <span class="nav-icon">📈</span> Performance
+      </a>
       <a class="nav-item" data-target="section-history">
         <span class="nav-icon">⏱</span> History
-      </a>
-      <a class="nav-item" data-target="section-market">
-        <span class="nav-icon">◎</span> Market
       </a>
     </nav>
 
@@ -118,6 +118,29 @@
       </section>
 
 
+      <section id="section-market" class="panel market-panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title">실시간 시세 <span class="panel-title-en">· Market</span></div>
+            <div class="panel-sub">Binance Futures</div>
+          </div>
+        </div>
+        <table class="market-table">
+          <thead>
+            <tr><th>페어</th><th>가격</th><th>24H 변동</th></tr>
+          </thead>
+          <tbody id="tickerBody">
+            <tr><td colspan="3" class="empty-row">시세 불러오는 중…</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="section-positions">
+        <div class="bot-grid" id="botGrid">
+          <!-- 봇 카드가 JS로 렌더링됨 -->
+        </div>
+      </section>
+
       <section id="section-charts" class="panel-grid">
         <div class="panel chart-panel">
           <div class="panel-head">
@@ -148,29 +171,6 @@
             <canvas id="sideDonut"></canvas>
           </div>
           <div class="donut-legend" id="donutLegend"></div>
-        </div>
-      </section>
-
-      <section id="section-market" class="panel market-panel">
-        <div class="panel-head">
-          <div>
-            <div class="panel-title">실시간 시세 <span class="panel-title-en">· Market</span></div>
-            <div class="panel-sub">Binance Futures</div>
-          </div>
-        </div>
-        <table class="market-table">
-          <thead>
-            <tr><th>페어</th><th>가격</th><th>24H 변동</th></tr>
-          </thead>
-          <tbody id="tickerBody">
-            <tr><td colspan="3" class="empty-row">시세 불러오는 중…</td></tr>
-          </tbody>
-        </table>
-      </section>
-
-      <section id="section-positions">
-        <div class="bot-grid" id="botGrid">
-          <!-- 봇 카드가 JS로 렌더링됨 -->
         </div>
       </section>
 
@@ -209,10 +209,10 @@
      기존 클릭 핸들러가 그대로 동작한다. -->
 <nav class="mobile-nav">
   <a class="nav-item active" data-target="section-overview"><span class="nav-icon">▦</span>개요</a>
-  <a class="nav-item" data-target="section-charts"><span class="nav-icon">📈</span>성과</a>
-  <a class="nav-item" data-target="section-positions"><span class="nav-icon">⇄</span>포지션</a>
-  <a class="nav-item" data-target="section-history"><span class="nav-icon">⏱</span>내역</a>
   <a class="nav-item" data-target="section-market"><span class="nav-icon">◎</span>시세</a>
+  <a class="nav-item" data-target="section-positions"><span class="nav-icon">⇄</span>포지션</a>
+  <a class="nav-item" data-target="section-charts"><span class="nav-icon">📈</span>성과</a>
+  <a class="nav-item" data-target="section-history"><span class="nav-icon">⏱</span>내역</a>
 </nav>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
