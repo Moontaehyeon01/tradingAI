@@ -416,13 +416,32 @@ function renderOpenTrades(trades, filter) {
     .map((t) => {
       const sideClass = t.is_short ? "side-short" : "side-long";
       const sideLabel = t.is_short ? "SHORT" : "LONG";
+      // 손절/익절은 진입가 대비 몇 % 떨어져 있는지도 같이 보여준다.
+      // 이 전략은 손절선이 박스 경계라 포지션마다 다르다.
+      const dist = (target) =>
+        target && t.open_rate ? ((target - t.open_rate) / t.open_rate) * 100 : null;
+      const sl = t.stop_loss_abs;
+      const tp = t.take_profit_abs;
+      const slD = dist(sl);
+      const tpD = dist(tp);
+      const rem = t.hold_remaining_h;
+      const remTxt =
+        rem === null || rem === undefined
+          ? "–"
+          : rem >= 1
+          ? `${Math.floor(rem)}시간`
+          : `${Math.round(rem * 60)}분`;
+      const remCls = rem !== null && rem !== undefined && rem < 6 ? "warn" : "";
       return `
         <tr>
           <td class="pair-cell">${t.pair}</td>
           <td><span class="side-pill ${sideClass}">${sideLabel}</span></td>
           <td>${t.leverage}x</td>
-          <td>${t.open_rate?.toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
-          <td>${t.current_rate?.toLocaleString(undefined, { maximumFractionDigits: 4 }) ?? "–"}</td>
+          <td>${fmtNum(t.open_rate)}</td>
+          <td>${fmtNum(t.current_rate)}</td>
+          <td class="lvl neg">${fmtNum(sl)}${slD === null ? "" : `<span class="lvl-d">${slD > 0 ? "+" : ""}${slD.toFixed(1)}%</span>`}</td>
+          <td class="lvl pos">${fmtNum(tp)}${tpD === null ? "" : `<span class="lvl-d">${tpD > 0 ? "+" : ""}${tpD.toFixed(1)}%</span>`}</td>
+          <td class="${remCls}">${remTxt}</td>
           <td class="${pnlClass(t.profit_pct)}">${fmtPct(t.profit_pct)}</td>
           <td class="${pnlClass(t.profit_abs)}">$${fmtUsd(t.profit_abs)}</td>
         </tr>`;
@@ -432,11 +451,17 @@ function renderOpenTrades(trades, filter) {
     <div class="pos-table-wrap">
     <table class="pos-table">
       <thead>
-        <tr><th>페어</th><th>방향</th><th>배율</th><th>진입가</th><th>현재가</th><th>손익%</th><th>손익$</th></tr>
+        <tr><th>페어</th><th>방향</th><th>배율</th><th>진입가</th><th>현재가</th>
+            <th>손절</th><th>익절</th><th>청산까지</th><th>손익%</th><th>손익$</th></tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
     </div>`;
+}
+
+function fmtNum(v) {
+  if (v === null || v === undefined) return "–";
+  return v.toLocaleString(undefined, { maximumFractionDigits: v >= 100 ? 2 : 4 });
 }
 
 /* ---------------- 로그인 상태 ----------------

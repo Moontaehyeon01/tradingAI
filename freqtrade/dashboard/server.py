@@ -48,7 +48,12 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
 
 BOTS = [
-    {"id": "boxbreakoutv2", "name": "BoxBreakoutV2 (박스돌파 V2)", "url": "http://127.0.0.1:8086", "leverage": 3},
+    # max_hold_h / box_max_width 는 전략 파라미터라 freqtrade API로는 안 나온다.
+    # 화면에 "시간청산까지 남은 시간", "박스 조건 충족 여부"를 표시하려고 여기 적어둔다.
+    # 전략 파라미터를 바꾸면 이 값도 같이 맞춰야 한다.
+    {"id": "boxbreakoutv2", "name": "BoxBreakoutV2 (박스돌파 V2)",
+     "url": "http://127.0.0.1:8086", "leverage": 3,
+     "max_hold_h": 48, "box_max_width": 0.04},
     # v1은 2026-08-28 격자탐색 결과 v2 조합(박스12봉/폭4%/익절35%/48h)이 학습·홀드아웃
     # 양쪽에서 더 나아서 중단함. 되살리려면 아래 줄과 docker compose 서비스를 함께.
     # {"id": "boxbreakout", "name": "BoxBreakoutStrategy (박스돌파)", "url": "http://127.0.0.1:8085", "leverage": 5},
@@ -200,6 +205,99 @@ def call_bot(base_url: str, path: str, params: dict | None = None):
     return resp.json()
 
 
+def exit_targets(trade: dict, bot: dict, config: dict) -> dict:
+    """
+    포지션이 '어디서 / 언제' 끝나는지를 계산한다.
+
+    익절가: minimal_roi 는 '레버리지 적용 후 계좌 수익률' 단위라서 가격으로 바꾸려면
+            레버리지로 나눠야 한다. ROI 35% + 레버리지 3배 -> 가격 11.7% 이동.
+    시간청산: 전략의 custom_exit(max_hold_candles)이 담당하는데 freqtrade API로는
+            노출되지 않아 BOTS 설정의 max_hold_h 를 쓴다.
+    """
+    out = {"take_profit_abs": None, "hold_remaining_h": None, "hold_total_h": None}
+
+    lev = trade.get("leverage") or bot.get("leverage") or 1
+    roi = config.get("minimal_roi") or {}
+    roi0 = roi.get("0")
+    open_rate = trade.get("open_rate")
+    if roi0 and open_rate and lev:
+        move = float(roi0) / float(lev)          # 계좌 기준 -> 가격 기준
+        out["take_profit_abs"] = (open_rate * (1 - move) if trade.get("is_short")
+                                  else open_rate * (1 + move))
+
+    max_hold = bot.get("max_hold_h")
+    if max_hold and trade.get("open_date"):
+        try:
+            # freqtrade는 "2026-08-31 00:00:22" (UTC) 형식으로 준다
+            opened = datetime.strptime(trade["open_date"], "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc)
+            elapsed = (datetime.now(timezone.utc) - opened).total_seconds() / 3600
+            out["hold_remaining_h"] = round(max(0.0, max_hold - elapsed), 1)
+            out["hold_total_h"] = max_hold
+        except (ValueError, TypeError):
+            pass
+    return out
+
+
+# 지표(박스 상태) 캐시. 대시보드는 4초마다 갱신되는데 박스는 1시간봉이라
+# 매번 봇에 물어보면 불필요한 부하만 생긴다.
+_signal_cache = {"ts": 0.0, "data": None}
+SIGNAL_TTL = 60
+
+
+def fetch_signals():
+    """감시 중인 페어별 박스 상태. '지금 왜 진입을 안 하는지'를 화면에서 답하기 위한 것."""
+    now = time.time()
+    if _signal_cache["data"] is not None and now - _signal_cache["ts"] < SIGNAL_TTL:
+        return _signal_cache["data"]
+
+    out = []
+    for bot in BOTS:
+        try:
+            wl = call_bot(bot["url"], "/api/v1/whitelist").get("whitelist", [])
+        except Exception:  # noqa: BLE001
+            continue
+        limit = bot.get("box_max_width", 0.04)
+        for pair in wl:
+            try:
+                d = call_bot(bot["url"], "/api/v1/pair_candles",
+                             {"pair": pair, "timeframe": "1h", "limit": 3})
+            except Exception:  # noqa: BLE001
+                continue
+            cols = {c: i for i, c in enumerate(d.get("columns", []))}
+            rows = d.get("data") or []
+            if not rows or "box_width" not in cols:
+                continue
+            r = rows[-1]
+
+            def val(name):
+                i = cols.get(name)
+                return r[i] if i is not None else None
+
+            hi, lo, width, close = (val("box_high"), val("box_low"),
+                                    val("box_width"), val("close"))
+            if hi is None or lo is None or width is None or not close:
+                continue
+            out.append({
+                "bot": bot["id"], "pair": pair,
+                "box_high": hi, "box_low": lo, "box_width": width,
+                "close": close, "limit": limit,
+                "is_box": width <= limit,
+                # 돌파까지 남은 거리(%). 음수면 이미 그 방향으로 벗어난 상태.
+                "to_high_pct": (hi - close) / close * 100,
+                "to_low_pct": (close - lo) / close * 100,
+                "enter_long": bool(val("enter_long")),
+                "enter_short": bool(val("enter_short")),
+            })
+    _signal_cache.update({"ts": now, "data": out})
+    return out
+
+
+@app.get("/api/signals")
+def api_signals():
+    return jsonify({"signals": fetch_signals()})
+
+
 def fetch_bot_summary(bot: dict) -> dict:
     out = {"id": bot["id"], "name": bot["name"], "leverage": bot.get("leverage", 1), "connected": False}
     try:
@@ -274,6 +372,10 @@ def fetch_bot_summary(bot: dict) -> dict:
                         "stake_amount": t.get("stake_amount", 0),
                         "open_date": t.get("open_date"),
                         "liquidation_price": t.get("liquidation_price"),
+                        # 이 전략은 손절선이 진입가 대비 고정%가 아니라 박스 경계라
+                        # 포지션마다 다르다. 화면에서 "어디서 잘리는지"를 보려면 필요.
+                        "stop_loss_abs": t.get("stop_loss_abs"),
+                        **exit_targets(t, bot, config),
                     }
                     for t in open_trades
                 ],
