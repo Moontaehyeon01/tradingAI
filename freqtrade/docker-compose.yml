@@ -139,6 +139,13 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
+      # 파일 하나짜리 bind mount라 컨테이너는 이 파일의 inode를 붙잡고 있다.
+      # sed -i 처럼 파일을 새로 만들어 갈아끼우는 방식으로 고치면 컨테이너는
+      # 계속 옛날 내용을 보게 된다 (2026-08-31 max_open_trades 변경 때 겪음).
+      # 설정을 바꾼 뒤에는 반드시 컨테이너를 recreate 할 것:
+      #   docker compose up -d --force-recreate freqtrade-boxbreakout-v2-futures
+      # 그리고 initial_state가 stopped라 재생성 후엔 봇이 정지 상태로 뜨므로
+      # 대시보드 전원 버튼이나 /api/v1/start 로 다시 켜야 한다.
       - ./config_boxbreakout_v2_futures.json:/freqtrade/user_data/config.json
       - ./strategies:/freqtrade/user_data/strategies
       - ./user_data:/freqtrade/user_data
