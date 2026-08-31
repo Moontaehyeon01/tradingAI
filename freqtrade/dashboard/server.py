@@ -12,6 +12,8 @@ freqtrade REST API를 감싸는 얇은 프록시 겸 정적 파일 서버.
     -> http://localhost:5000 접속
 """
 
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -19,6 +21,7 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlencode
 
 import requests
 from flask import Flask, jsonify, request, Response, send_from_directory
@@ -39,6 +42,14 @@ if not DASHBOARD_PASSWORD:
         "DASHBOARD_PASSWORD가 .env에 설정되어 있지 않습니다. "
         "비밀번호 없이는 대시보드를 실행하지 않습니다 (인터넷 공개 시 위험)."
     )
+
+# 바이낸스 계좌 직접 조회용(읽기 전용으로만 사용).
+# freqtrade API는 "봇이 아는 거래"만 알려주기 때문에, 사용자가 앱/웹에서 직접 잡은
+# 포지션이나 걸어둔 미체결 주문은 봇 쪽에서 보이지 않는다. 그 부분만 거래소에
+# 직접 물어본다. 주문 생성/취소는 하지 않고 조회 엔드포인트만 호출한다.
+BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY", "")
+BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET", "")
+BINANCE_FAPI = "https://fapi.binance.com"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("FREQTRADE__TELEGRAM__TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("FREQTRADE__TELEGRAM__CHAT_ID", "")
@@ -296,6 +307,162 @@ def fetch_signals():
 @app.get("/api/signals")
 def api_signals():
     return jsonify({"signals": fetch_signals()})
+
+
+# ---------------------------------------------------------------------------
+# 계좌 직접 조회 (수동 매매 / 미체결 주문)
+#
+# freqtrade는 "자기가 낸 주문"만 안다. 사용자가 바이낸스 앱이나 웹에서 직접 잡은
+# 포지션, 직접 걸어둔 지정가 주문은 봇 DB에 없어서 대시보드에 전혀 나오지 않았다.
+# 그래서 이 두 가지만 거래소 REST API로 직접 가져온다.
+#
+# 보안: 조회 엔드포인트(positionRisk / openOrders)만 호출한다. 주문 생성·취소는
+#       이 서버에서 하지 않는다.
+# ---------------------------------------------------------------------------
+
+ORDER_TYPE_KO = {
+    "LIMIT": "지정가",
+    "MARKET": "시장가",
+    "STOP": "스탑 지정가",
+    "STOP_MARKET": "스탑 시장가",
+    "TAKE_PROFIT": "익절 지정가",
+    "TAKE_PROFIT_MARKET": "익절 시장가",
+    "TRAILING_STOP_MARKET": "트레일링 스탑",
+}
+
+# 바이낸스는 주문을 낸 경로를 clientOrderId 접두사로 남긴다. 봇(ccxt)이 낸 주문과
+# 사람이 앱/웹에서 낸 주문을 구분하는 가장 확실한 단서라서 이걸 먼저 본다.
+MANUAL_ORDER_PREFIXES = ("web_", "android_", "ios_", "mobile_", "autoclose-")
+
+
+def binance_signed(path: str, params: dict | None = None):
+    """바이낸스 USDⓈ-M 선물 서명 GET. 조회 전용."""
+    if not BINANCE_API_KEY or not BINANCE_API_SECRET:
+        raise RuntimeError("BINANCE_API_KEY / BINANCE_API_SECRET 가 .env에 없습니다")
+    p = dict(params or {})
+    p["timestamp"] = int(time.time() * 1000)
+    p["recvWindow"] = 5000
+    query = urlencode(p)
+    signature = hmac.new(
+        BINANCE_API_SECRET.encode(), query.encode(), hashlib.sha256
+    ).hexdigest()
+    resp = requests.get(
+        f"{BINANCE_FAPI}{path}?{query}&signature={signature}",
+        headers={"X-MBX-APIKEY": BINANCE_API_KEY},
+        timeout=6,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _bot_symbols() -> tuple[set, dict]:
+    """
+    봇이 관리 중인 심볼과, 봇이 감시하는 심볼(화이트리스트)을 모은다.
+
+    반환: (봇이 실제로 포지션을 들고 있는 심볼, {심볼: 봇 이름})
+    freqtrade의 페어 표기 "BTC/USDT:USDT" 를 바이낸스 심볼 "BTCUSDT" 로 바꾼다.
+    """
+    held, watched = set(), {}
+    for bot in BOTS:
+        try:
+            for t in call_bot(bot["url"], "/api/v1/status"):
+                held.add(t["pair"].split(":")[0].replace("/", ""))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            for pair in call_bot(bot["url"], "/api/v1/whitelist").get("whitelist", []):
+                watched[pair.split(":")[0].replace("/", "")] = bot["name"]
+        except Exception:  # noqa: BLE001
+            pass
+    return held, watched
+
+
+# 대시보드는 4초마다 갱신된다. 그대로 거래소에 붙이면 요청 한도(weight)를 낭비하므로
+# 짧게 캐시한다. 미체결 주문은 사람이 직접 넣는 것이라 몇 초 늦어도 문제없다.
+_account_cache = {"ts": 0.0, "data": None}
+ACCOUNT_TTL = 8
+
+
+def fetch_account() -> dict:
+    now = time.time()
+    if _account_cache["data"] is not None and now - _account_cache["ts"] < ACCOUNT_TTL:
+        return _account_cache["data"]
+
+    out = {"ok": True, "error": None, "positions": [], "orders": []}
+    try:
+        raw_pos = binance_signed("/fapi/v2/positionRisk")
+        raw_ord = binance_signed("/fapi/v1/openOrders")
+    except Exception as exc:  # noqa: BLE001
+        out.update({"ok": False, "error": str(exc)})
+        _account_cache.update({"ts": now, "data": out})
+        return out
+
+    held, watched = _bot_symbols()
+
+    for p in raw_pos:
+        amt = float(p.get("positionAmt") or 0)
+        if amt == 0:
+            continue
+        symbol = p["symbol"]
+        lev = float(p.get("leverage") or 1) or 1
+        notional = abs(float(p.get("notional") or 0))
+        # 격리 마진이면 실제 투입 증거금이 그대로 있고, 교차면 명목가/레버리지로 환산.
+        margin = float(p.get("isolatedMargin") or 0) or (notional / lev if lev else 0)
+        pnl = float(p.get("unRealizedProfit") or 0)
+        out["positions"].append({
+            "symbol": symbol,
+            "base": symbol.replace("USDT", ""),
+            "side": "short" if amt < 0 else "long",
+            "amount": abs(amt),
+            "entry_price": float(p.get("entryPrice") or 0),
+            "mark_price": float(p.get("markPrice") or 0),
+            "liquidation_price": float(p.get("liquidationPrice") or 0) or None,
+            "leverage": lev,
+            "notional": notional,
+            "margin": margin,
+            "pnl": pnl,
+            # 레버리지가 적용된 계좌 기준 수익률(= 투입 증거금 대비)
+            "pnl_pct": (pnl / margin * 100) if margin else 0,
+            "managed": symbol in held,
+        })
+
+    for o in raw_ord:
+        symbol = o["symbol"]
+        cid = o.get("clientOrderId", "") or ""
+        if cid.startswith(MANUAL_ORDER_PREFIXES):
+            manual = True
+        else:
+            # 접두사로 판단이 안 되면, 봇이 감시하는 페어인지로 갈음한다.
+            manual = symbol not in watched
+        price = float(o.get("price") or 0)
+        stop_price = float(o.get("stopPrice") or 0)
+        qty = float(o.get("origQty") or 0)
+        filled = float(o.get("executedQty") or 0)
+        out["orders"].append({
+            "order_id": o.get("orderId"),
+            "symbol": symbol,
+            "base": symbol.replace("USDT", ""),
+            "side": o.get("side"),                       # BUY / SELL
+            "type": o.get("type"),
+            "type_ko": ORDER_TYPE_KO.get(o.get("type"), o.get("type")),
+            "price": price or None,
+            "stop_price": stop_price or None,
+            "qty": qty,
+            "filled": filled,
+            "reduce_only": bool(o.get("reduceOnly")),
+            "manual": manual,
+            "owner": "수동" if manual else watched.get(symbol, "봇"),
+            "time": int(o.get("time") or 0),
+        })
+
+    out["orders"].sort(key=lambda x: (x["symbol"], x["side"], -(x["price"] or 0)))
+    _account_cache.update({"ts": now, "data": out})
+    return out
+
+
+@app.get("/api/account")
+def api_account():
+    return jsonify(fetch_account())
 
 
 def fetch_bot_summary(bot: dict) -> dict:

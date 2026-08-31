@@ -709,3 +709,53 @@ table.pos-table { width: 100%; border-collapse: collapse; }
 @media (max-width: 640px) {
   .pos-table .lvl-d { font-size: 9px; }
 }
+
+/* ---- 수동 포지션 / 미체결 주문 ----
+   미체결 주문은 그리드 매매처럼 수십 건이 한 종목에 걸리는 경우가 있어서
+   같은 조건끼리 한 줄로 묶고, 클릭하면 개별 주문이 펼쳐지도록 했다. */
+#manualTable { min-width: 760px; }
+#orderTable  { min-width: 620px; }
+
+#section-positions .panel { margin-top: 16px; }
+
+.ord-group { cursor: pointer; }
+.ord-group:hover td { background: var(--card-hover); }
+.ord-caret {
+  display: inline-block;
+  width: 12px;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+.ord-count {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--blue);
+  background: rgba(91, 141, 239, 0.14);
+}
+/* 펼쳐진 개별 주문. 그룹 줄에 딸린 것임을 왼쪽 선으로 표시 */
+.ord-sub td { background: rgba(255, 255, 255, 0.015); font-size: 11px; }
+.ord-sub td:first-child { border-left: 2px solid var(--border); }
+.ord-tag {
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  color: var(--text-dim);
+  background: rgba(139, 144, 160, 0.14);
+}
+.ord-owner {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-dim);
+  background: rgba(139, 144, 160, 0.14);
+  white-space: nowrap;
+}
+.ord-owner.manual { color: var(--orange); background: rgba(245, 158, 11, 0.14); }
+/* 내용이 없을 때는 표를 넓게 잡지 않는다 (안내 문구가 화면 밖으로 밀리는 것 방지).
+   폭을 풀면 좁은 화면에서 머리글이 글자 단위로 세로로 접혀 보기 흉하므로 같이 숨긴다. */
+#manualTable.is-empty, #orderTable.is-empty { min-width: 0; }
+#manualTable.is-empty thead, #orderTable.is-empty thead { display: none; }
