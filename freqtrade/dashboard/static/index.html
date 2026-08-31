@@ -29,6 +29,9 @@
       <a class="nav-item" data-target="section-positions">
         <span class="nav-icon">⇄</span> Positions
       </a>
+      <a class="nav-item" data-target="section-signals">
+        <span class="nav-icon">◈</span> Signals
+      </a>
       <a class="nav-item" data-target="section-charts">
         <span class="nav-icon">📈</span> Performance
       </a>
@@ -141,6 +144,25 @@
         </div>
       </section>
 
+      <section id="section-signals" class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title">진입 조건 현황</div>
+            <div class="panel-sub" id="signalNote">불러오는 중…</div>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="history-table" id="signalTable">
+            <thead>
+              <tr><th>페어</th><th>박스권</th><th>박스폭</th><th>현재가</th><th>돌파까지</th><th>상태</th></tr>
+            </thead>
+            <tbody id="signalBody">
+              <tr><td colspan="6" class="empty-row">지표를 불러오는 중…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <section id="section-charts" class="panel-grid">
         <div class="panel chart-panel">
           <div class="panel-head">
@@ -211,11 +233,13 @@
   <a class="nav-item active" data-target="section-overview"><span class="nav-icon">▦</span>개요</a>
   <a class="nav-item" data-target="section-market"><span class="nav-icon">◎</span>시세</a>
   <a class="nav-item" data-target="section-positions"><span class="nav-icon">⇄</span>포지션</a>
+  <a class="nav-item" data-target="section-signals"><span class="nav-icon">◈</span>신호</a>
   <a class="nav-item" data-target="section-charts"><span class="nav-icon">📈</span>성과</a>
   <a class="nav-item" data-target="section-history"><span class="nav-icon">⏱</span>내역</a>
 </nav>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="app.js"></script>
+<script src="signals.js"></script>
 </body>
 </html>
