@@ -759,3 +759,5 @@ table.pos-table { width: 100%; border-collapse: collapse; }
    폭을 풀면 좁은 화면에서 머리글이 글자 단위로 세로로 접혀 보기 흉하므로 같이 숨긴다. */
 #manualTable.is-empty, #orderTable.is-empty { min-width: 0; }
 #manualTable.is-empty thead, #orderTable.is-empty thead { display: none; }
+.lock-link { color: var(--blue); font-weight: 700; text-decoration: none; }
+.lock-link:hover { text-decoration: underline; }

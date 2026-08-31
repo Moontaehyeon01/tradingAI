@@ -5,6 +5,10 @@
    직접 잡은 포지션, 직접 걸어둔 지정가 주문은 봇 카드에 전혀 나오지 않았다.
    서버의 /api/account 가 거래소 계좌를 직접 조회해서 그 부분을 채워준다.
 
+   /api/account 는 조회라도 로그인이 필요하다. 아직 체결되지 않은 지정가 주문의
+   가격과 수량이 그대로 드러나기 때문에, 다른 조회 API와 달리 열람 자체를 막아뒀다.
+   로그인 전에는 두 패널 모두 잠금 안내만 보여준다.
+
    미체결 주문은 그리드 매매처럼 같은 종목에 수십 건이 한 번에 걸리는 경우가 많아서
    (종목 + 방향 + 주문종류)로 묶어서 한 줄로 보여주고, 클릭하면 펼쳐지게 했다.
    50건을 그대로 나열하면 화면을 다 잡아먹는다.
@@ -220,6 +224,23 @@ document.getElementById("orderBody")?.addEventListener("click", (e) => {
   if (lastAccount) renderOpenOrders(lastAccount);
 });
 
+/* ---------------- 잠금 상태 ---------------- */
+
+function renderLocked() {
+  const msg = (cols) =>
+    `<tr><td colspan="${cols}" class="empty-row">` +
+    `🔒 내 주문 내역이라 <a href="/login" class="lock-link">로그인</a> 후에 표시됩니다` +
+    `</td></tr>`;
+  setHTMLIfChanged(document.getElementById("manualBody"), msg(10));
+  setHTMLIfChanged(document.getElementById("orderBody"), msg(7));
+  setTableEmpty("manualTable", true);
+  setTableEmpty("orderTable", true);
+  const mn = document.getElementById("manualNote");
+  const on = document.getElementById("orderNote");
+  if (mn) mn.textContent = "";
+  if (on) on.textContent = "";
+}
+
 /* ---------------- 갱신 ---------------- */
 
 async function refreshAccount() {
@@ -228,8 +249,14 @@ async function refreshAccount() {
     lastAccount = data;
     renderManualPositions(data);
     renderOpenOrders(data);
-  } catch {
-    /* 조회 실패 시 직전 화면을 그대로 둔다 */
+  } catch (err) {
+    // 걸어둔 주문이 그대로 노출되는 데이터라 이 API만 로그인을 요구한다.
+    // 로그인하면 다음 주기(10초)에 알아서 채워진다.
+    if (err && err.status === 401) {
+      lastAccount = null;
+      renderLocked();
+    }
+    /* 그 외 조회 실패는 직전 화면을 그대로 둔다 */
   }
 }
 
