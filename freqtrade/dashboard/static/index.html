@@ -142,6 +142,49 @@
         <div class="bot-grid" id="botGrid">
           <!-- 봇 카드가 JS로 렌더링됨 -->
         </div>
+
+        <!-- 봇이 모르는 내 매매.
+             freqtrade는 자기가 낸 주문만 알기 때문에, 앱/웹에서 직접 잡은 포지션과
+             직접 걸어둔 미체결 주문은 위 봇 카드에 절대 나오지 않는다.
+             이 두 패널은 바이낸스 계좌를 직접 조회해서 그 부분을 채운다. -->
+        <div class="panel" id="manualPanel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">수동 포지션 <span class="panel-title-en">· Manual</span></div>
+              <div class="panel-sub" id="manualNote">불러오는 중…</div>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="history-table" id="manualTable">
+              <thead>
+                <tr><th>종목</th><th>방향</th><th>배율</th><th>수량</th><th>진입가</th>
+                    <th>현재가</th><th>청산가</th><th>증거금</th><th>손익%</th><th>손익$</th></tr>
+              </thead>
+              <tbody id="manualBody">
+                <tr><td colspan="10" class="empty-row">불러오는 중…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel" id="orderPanel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">미체결 주문 <span class="panel-title-en">· Open Orders</span></div>
+              <div class="panel-sub" id="orderNote">불러오는 중…</div>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="history-table" id="orderTable">
+              <thead>
+                <tr><th>종목</th><th>구분</th><th>가격</th><th>수량</th><th>체결</th><th>경과</th><th>출처</th></tr>
+              </thead>
+              <tbody id="orderBody">
+                <tr><td colspan="7" class="empty-row">불러오는 중…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </section>
 
       <section id="section-signals" class="panel">
@@ -241,5 +284,6 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="app.js"></script>
 <script src="signals.js"></script>
+<script src="account.js"></script>
 </body>
 </html>
