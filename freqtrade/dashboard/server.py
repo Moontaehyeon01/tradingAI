@@ -135,6 +135,7 @@ def check_dashboard_auth():
     열람은 로그인 없이, 조작은 로그인해야만.
 
       - GET/HEAD (대시보드 화면, 조회용 API, 정적 파일) -> 인증 불필요
+        단, /api/account 는 예외로 조회도 인증 필수 (미체결 주문이 그대로 드러남)
       - 그 외 메서드(POST 등: 봇 시작/정지) -> 인증 필수
       - /webhook 은 freqtrade 컨테이너가 부르는 경로라 브라우저 로그인과 무관하게
         WEBHOOK_SECRET으로 따로 검증함 (webhook_relay 함수 안에서 체크)
@@ -158,6 +159,13 @@ def check_dashboard_auth():
         if not ok:
             return _auth_challenge()
         return None
+
+    # /api/account 만은 조회라도 로그인 필수.
+    # 다른 조회 API는 잔고·손익처럼 "이미 벌어진 일"만 보여주지만, 이건 아직
+    # 체결되지 않고 걸어둔 지정가 주문의 가격과 수량이 전부 드러난다.
+    # 남이 보면 그대로 앞에서 채갈 수 있는 정보라 열람 자체를 막는다.
+    if request.path == "/api/account" and not _is_authed():
+        return jsonify({"ok": False, "error": "로그인이 필요합니다."}), 401
 
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return None
