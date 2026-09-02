@@ -562,6 +562,7 @@ def fetch_bot_summary(bot: dict) -> dict:
                         "close_profit_abs": t.get("close_profit_abs"),
                         "close_date": t.get("close_date"),
                         "exit_reason": t.get("exit_reason"),
+                        "exit_reason_ko": exit_reason_ko(t.get("exit_reason")),
                     }
                     for t in recent.get("trades", [])
                     if not t.get("is_open")
@@ -690,16 +691,35 @@ def api_tickers():
         return jsonify({"error": str(exc)}), 502
 
 
+# freqtrade가 내보내는 청산 사유 -> 화면/텔레그램에 쓸 한글 라벨.
+#
+# trailing_stop_loss 주의: 이 이름은 "트레일링 스탑을 켰다"는 뜻이 아니다.
+# freqtrade는 '최초 손절선이 아닌, 이후 조여진 손절선'에 걸리면 무조건 이 이름을 쓴다.
+# 지금 봇은 trailing_stop=false 이고 손절선을 조이는 건 custom_stoploss(박스 경계)뿐이라,
+# 이 사유는 사실상 전부 "박스 경계 손절"이다. 그래서 그렇게 표기한다.
+# (트레일링 스탑을 실제로 켠 전략을 다시 띄운다면 이 라벨은 맞지 않으므로 같이 손볼 것)
 EXIT_REASON_KO = {
-    "roi": "목표 수익 도달",
-    "stop_loss": "손절",
-    "trailing_stop_loss": "트레일링 스탑",
+    "roi": "익절 (목표 도달)",
+    "stop_loss": "손절 (안전망)",
+    "trailing_stop_loss": "손절 (박스 경계)",
+    "max_hold": "시간 청산",
     "exit_signal": "전략 청산 신호",
     "force_exit": "수동 청산",
     "emergency_exit": "긴급 청산",
-    "liquidation": "강제 청산(청산가 도달)",
+    "liquidation": "강제 청산 (청산가 도달)",
     "partial_exit": "부분 청산",
+    # 봇이 아니라 거래소/사용자 쪽에서 포지션이 닫힌 경우
+    "sold_on_exchange": "거래소에서 직접 청산",
+    "timeout": "주문 시간 초과",
+    "cancelled": "주문 취소",
 }
+
+
+def exit_reason_ko(raw: str) -> str:
+    """모르는 사유는 원문 그대로 둔다 - 조용히 감추는 것보다 낫다."""
+    if not raw:
+        return "–"
+    return EXIT_REASON_KO.get(raw, raw)
 
 # freqtrade가 보내는 상태/경고/오류 메시지는 자유 형식 영어 문장이라 완벽한 번역은
 # 불가능함. 자주 나오는 패턴만 골라 한글로 바꿔주고, 매칭 안 되는 문장은 원문을
@@ -803,7 +823,7 @@ def webhook_relay():
             profit_amount = 0.0
         stake_currency = data.get("stake_currency", "USDT")
         exit_reason_raw = data.get("exit_reason", "")
-        exit_reason_ko = EXIT_REASON_KO.get(exit_reason_raw, exit_reason_raw)
+        reason_ko = exit_reason_ko(exit_reason_raw)
         text = (
             f"[{bot_name}] [선물 청산]\n"
             f"종목: {pair}\n"
@@ -811,7 +831,7 @@ def webhook_relay():
             f"상태: 청산 완료\n"
             f"실현 수익률: {profit_ratio_pct:.4f}%\n"
             f"실현 손익: {profit_amount:.4f} {stake_currency}\n"
-            f"사유: {exit_reason_ko}\n"
+            f"사유: {reason_ko}\n"
             f"====================="
         )
         send_telegram(text)
@@ -826,7 +846,7 @@ def webhook_relay():
                 "profit_ratio_pct": profit_ratio_pct,
                 "profit_amount": profit_amount,
                 "stake_currency": stake_currency,
-                "exit_reason_ko": exit_reason_ko,
+                "exit_reason_ko": reason_ko,
             }
         )
 

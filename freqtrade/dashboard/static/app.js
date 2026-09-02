@@ -622,7 +622,7 @@ function renderHistory(summary) {
           <td><span class="side-pill ${sideClass}">${sideLabel}</span></td>
           <td class="${pnlClass(t.close_profit_pct)}">${fmtPct(t.close_profit_pct)}</td>
           <td class="${pnlClass(t.close_profit_abs)}">${fmtUsd(t.close_profit_abs)}</td>
-          <td class="neutral">${t.exit_reason ?? "–"}</td>
+          <td class="neutral">${t.exit_reason_ko ?? t.exit_reason ?? "–"}</td>
           <td class="neutral">${timeAgo(t.close_date)}</td>
         </tr>`;
     })
