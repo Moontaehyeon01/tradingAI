@@ -64,7 +64,7 @@ BOTS = [
     # 전략 파라미터를 바꾸면 이 값도 같이 맞춰야 한다.
     {"id": "boxbreakoutv2", "name": "BoxBreakoutV2 (박스돌파 V2)",
      "url": "http://127.0.0.1:8086", "leverage": 3,
-     "max_hold_h": 48, "box_max_width": 0.04},
+     "max_hold_h": 120, "box_max_width": 0.04},
     # v1은 2026-08-28 격자탐색 결과 v2 조합(박스12봉/폭4%/익절35%/48h)이 학습·홀드아웃
     # 양쪽에서 더 나아서 중단함. 되살리려면 아래 줄과 docker compose 서비스를 함께.
     # {"id": "boxbreakout", "name": "BoxBreakoutStrategy (박스돌파)", "url": "http://127.0.0.1:8085", "leverage": 5},

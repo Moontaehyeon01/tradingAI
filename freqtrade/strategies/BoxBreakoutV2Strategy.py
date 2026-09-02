@@ -80,7 +80,9 @@ class BoxBreakoutV2Strategy(IStrategy):
     max_stop_pct = DecimalParameter(0.020, 0.080, default=0.050, decimals=3, space="sell")
 
     # 0이면 시간 청산 없음. 0보다 크면 그 시간(봉 수) 뒤 청산.
-    max_hold_candles = IntParameter(0, 96, default=0, space="sell")
+    # 1시간봉 기준 캔들 수 = 시간. 0이면 시간청산 비활성.
+    # 상한을 240(10일)까지 열어둔다 - 5일(120)을 쓰려면 기존 상한 96으로는 안 된다.
+    max_hold_candles = IntParameter(0, 240, default=0, space="sell")
 
     trailing_stop = False
     # custom_exit(시간청산)을 쓰려면 반드시 True 여야 한다.
