@@ -821,3 +821,50 @@ async function refresh() {
 
 refresh();
 setInterval(refresh, REFRESH_MS);
+
+/* ---------------- 접이식 패널 ----------------
+   미체결 주문의 그룹 펼치기(캐럿 클릭)와 같은 방식이다. 페이지가 세로로 너무
+   길어져서, 자주 안 보는 패널(진입 조건 현황·전체 청산 이력)은 접어둘 수
+   있게 했다. 접힘 상태는 이 브라우저에만 저장한다 - 다른 사람이나 다른
+   기기의 화면에는 영향이 없다(뷰어별 편의일 뿐, 공유 상태가 아니므로). */
+function loadCollapsedPanels() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem("collapsedPanels") || "[]"));
+  } catch {
+    return new Set(); // 프라이빗 모드 등에서 접근이 막혀도 기본값(펼침)으로 동작
+  }
+}
+function saveCollapsedPanels(set) {
+  try {
+    localStorage.setItem("collapsedPanels", JSON.stringify([...set]));
+  } catch {
+    /* 저장 실패해도 화면 동작에는 지장 없다 - 다음 새로고침에서 펼침으로 돌아갈 뿐 */
+  }
+}
+
+function initCollapsiblePanels() {
+  const collapsed = loadCollapsedPanels();
+  document.querySelectorAll(".panel-head-collapsible").forEach((head) => {
+    const targetId = head.dataset.collapseTarget;
+    const target = document.getElementById(targetId);
+    const caret = head.querySelector(".panel-caret");
+    if (!target) return;
+
+    const apply = (isCollapsed) => {
+      target.hidden = isCollapsed;
+      if (caret) caret.textContent = isCollapsed ? "▸" : "▾";
+      head.classList.toggle("is-collapsed", isCollapsed);
+    };
+    apply(collapsed.has(targetId));
+
+    head.addEventListener("click", () => {
+      const willCollapse = !target.hidden;
+      apply(willCollapse);
+      const set = loadCollapsedPanels();
+      if (willCollapse) set.add(targetId);
+      else set.delete(targetId);
+      saveCollapsedPanels(set);
+    });
+  });
+}
+initCollapsiblePanels();
