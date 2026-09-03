@@ -205,6 +205,19 @@ function renderStats(summary) {
   pnlChip.textContent = fmtPct(summary.combined.total_profit_pct);
   pnlChip.className = `stat-chip ${chipClass(summary.combined.total_profit_pct)}`;
 
+  // 총손익 = 봇 손익 + 수동 매매 손익. 아래 밝혀서 뭐가 얼마나 기여했는지 보여준다.
+  // manual_profit_abs 가 null 이면 조회 실패(계좌 접근 오류 등)라 값이 아니라
+  // 그 사실 자체를 알려야 한다 - fmtUsd(null) 이 "–" 를 주는 걸 그대로 쓴다.
+  const pnlNote = document.getElementById("statPnlBreakdown");
+  if (pnlNote) {
+    const botTxt = `봇 $${fmtUsd(summary.combined.bot_profit_abs)}`;
+    const manualTxt =
+      summary.combined.manual_profit_abs === null
+        ? "수동 조회 실패"
+        : `수동 $${fmtUsd(summary.combined.manual_profit_abs)}`;
+    pnlNote.textContent = `${botTxt} · ${manualTxt}`;
+  }
+
   const openCount = connectedBots.reduce((sum, b) => sum + b.open_trades.length, 0);
   document.getElementById("statOpenCount").textContent = openCount;
 
@@ -597,6 +610,11 @@ function renderBotCard(bot, filter) {
 
 /* ---------------- History table ---------------- */
 
+// 표에 몇 페이지째를 보고 있는지. renderHistory 는 4초마다 다시 호출되므로
+// 여기서 들고 있지 않으면 폴링될 때마다 1페이지로 되돌아간다.
+let historyPage = 0;
+const HISTORY_PAGE_SIZE = 10;
+
 function renderHistory(summary) {
   const rows = [];
   summary.bots.forEach((b) => {
@@ -617,12 +635,21 @@ function renderHistory(summary) {
   rows.sort((a, b) => new Date(b.close_date) - new Date(a.close_date));
 
   const tbody = document.querySelector("#historyTable tbody");
+  const pager = document.getElementById("historyPager");
   if (!rows.length) {
     setHTMLIfChanged(tbody, `<tr><td colspan="7" class="empty-row">청산된 거래가 아직 없습니다</td></tr>`);
+    if (pager) setHTMLIfChanged(pager, "");
     return;
   }
-  const html = rows
-    .slice(0, 15)
+
+  const totalPages = Math.max(1, Math.ceil(rows.length / HISTORY_PAGE_SIZE));
+  // 폴링 사이에 거래가 새로 잡히거나 청산돼 rows.length 가 줄면 지금 보던
+  // 페이지가 범위를 넘어갈 수 있다 - 마지막 페이지로 당겨준다.
+  historyPage = Math.min(historyPage, totalPages - 1);
+  const start = historyPage * HISTORY_PAGE_SIZE;
+  const pageRows = rows.slice(start, start + HISTORY_PAGE_SIZE);
+
+  const html = pageRows
     .map((t) => {
       // 수동 청산은 체결 기록에서 방향을 못 찾으면 is_short 가 null 로 온다 -
       // 이때 LONG으로 단정하면 틀릴 수 있으므로 "모름" 배지를 따로 둔다.
@@ -644,7 +671,34 @@ function renderHistory(summary) {
     })
     .join("");
   setHTMLIfChanged(tbody, html);
+
+  if (pager) {
+    if (totalPages <= 1) {
+      setHTMLIfChanged(pager, "");
+    } else {
+      setHTMLIfChanged(
+        pager,
+        `<button class="pager-btn" id="historyPrevBtn" ${historyPage === 0 ? "disabled" : ""}>‹ 이전</button>
+         <span class="pager-label">${historyPage + 1} / ${totalPages} 페이지 · 총 ${rows.length}건</span>
+         <button class="pager-btn" id="historyNextBtn" ${historyPage >= totalPages - 1 ? "disabled" : ""}>다음 ›</button>`
+      );
+    }
+  }
 }
+
+// 페이지 버튼은 renderHistory 가 setHTMLIfChanged 로 통째로 다시 그리므로,
+// 버튼에 직접 리스너를 매번 다는 게 아니라 부모(historyPager)에 위임한다
+// (미체결 주문 그룹 펼치기와 같은 패턴 - 안 그러면 내용이 안 바뀐 폴링에서
+// 리스너가 계속 중복으로 쌓인다).
+document.getElementById("historyPager")?.addEventListener("click", (e) => {
+  if (e.target.closest("#historyPrevBtn")) {
+    historyPage = Math.max(0, historyPage - 1);
+    if (lastSummary) renderHistory(lastSummary);
+  } else if (e.target.closest("#historyNextBtn")) {
+    historyPage += 1;
+    if (lastSummary) renderHistory(lastSummary);
+  }
+});
 
 /* ---------------- Alerts feed ---------------- */
 
