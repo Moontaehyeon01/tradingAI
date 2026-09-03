@@ -60,16 +60,21 @@ function playExitSound(isProfit) {
 }
 
 function fmtUsd(n, digits = 2) {
+  // null/undefined 판정은 Number() 변환 전에 해야 한다 - Number(null) === 0 이라
+  // 변환 후에 비교하면 "값 없음"이 "0" 으로 둔갑한다(수동 청산에서 방향을 못 찾아
+  // pct 가 null 로 오는 경우 실제로 걸렸던 문제).
+  if (n === null || n === undefined) return "–";
   // 서버에서 문자열로 오는 값도 있어서(webhook 페이로드 등) 항상 숫자로 변환 후 처리
   n = Number(n);
-  if (n === null || n === undefined || Number.isNaN(n)) return "–";
+  if (Number.isNaN(n)) return "–";
   const sign = n > 0 ? "+" : "";
   return `${sign}${n.toFixed(digits)}`;
 }
 
 function fmtPct(n, digits = 2) {
+  if (n === null || n === undefined) return "–";
   n = Number(n);
-  if (n === null || n === undefined || Number.isNaN(n)) return "–";
+  if (Number.isNaN(n)) return "–";
   const sign = n > 0 ? "+" : "";
   return `${sign}${n.toFixed(digits)}%`;
 }
@@ -603,6 +608,12 @@ function renderHistory(summary) {
       })
     );
   });
+  // 봇이 기록하지 않은 청산(앱/웹에서 직접 처리한 것). server.py 의
+  // fetch_manual_trade_history() 가 계좌 실현손익에서 봇 기록과 겹치지 않는
+  // 것만 걸러서 준다. TQQQ처럼 봇이 아예 모르는 페어도 여기 들어온다.
+  (summary.combined?.manual_trades || []).forEach((t) =>
+    rows.push({ strategy: "수동", manual: true, ...t })
+  );
   rows.sort((a, b) => new Date(b.close_date) - new Date(a.close_date));
 
   const tbody = document.querySelector("#historyTable tbody");
@@ -613,13 +624,18 @@ function renderHistory(summary) {
   const html = rows
     .slice(0, 15)
     .map((t) => {
-      const sideClass = t.is_short ? "side-short" : "side-long";
-      const sideLabel = t.is_short ? "SHORT" : "LONG";
+      // 수동 청산은 체결 기록에서 방향을 못 찾으면 is_short 가 null 로 온다 -
+      // 이때 LONG으로 단정하면 틀릴 수 있으므로 "모름" 배지를 따로 둔다.
+      let sidePill;
+      if (t.is_short === true) sidePill = `<span class="side-pill side-short">SHORT</span>`;
+      else if (t.is_short === false) sidePill = `<span class="side-pill side-long">LONG</span>`;
+      else sidePill = `<span class="neutral">–</span>`;
+      const strategyCls = t.manual ? "ord-owner manual" : "neutral";
       return `
         <tr>
-          <td class="neutral">${t.strategy}</td>
+          <td><span class="${strategyCls}">${t.strategy}</span></td>
           <td class="pair-cell">${t.pair}</td>
-          <td><span class="side-pill ${sideClass}">${sideLabel}</span></td>
+          <td>${sidePill}</td>
           <td class="${pnlClass(t.close_profit_pct)}">${fmtPct(t.close_profit_pct)}</td>
           <td class="${pnlClass(t.close_profit_abs)}">${fmtUsd(t.close_profit_abs)}</td>
           <td class="neutral">${t.exit_reason_ko ?? t.exit_reason ?? "–"}</td>

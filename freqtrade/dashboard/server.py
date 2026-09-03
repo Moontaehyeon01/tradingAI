@@ -669,6 +669,8 @@ def api_summary():
                 "total_profit_abs": total_profit_abs,
                 "total_profit_pct": (total_profit_abs / total_starting * 100) if total_starting else 0,
                 "unmanaged_positions": list(unmanaged.values()),
+                # 청산 이력 테이블에서 봇 기록과 합쳐서 보여줄 수동 청산들.
+                "manual_trades": fetch_manual_trade_history(),
             },
             "server_time": int(time.time()),
         }
@@ -729,6 +731,174 @@ def exit_reason_ko(raw: str) -> str:
     if not raw:
         return "–"
     return EXIT_REASON_KO.get(raw, raw)
+
+
+def _bot_closed_keys() -> set:
+    """(바이낸스 심볼, 초단위 UTC 타임스탬프) -> 각 봇이 자기 DB에 남긴 청산들.
+
+    수동 청산 이력을 만들 때, 계좌 실현손익 이벤트가 이 키와 겹치면 이미 위의
+    recent_trades 로 표시되고 있는 봇의 청산이므로 제외한다. 실측 결과 봇이 낸
+    주문의 체결 시각과 계좌 realized PnL 이벤트의 타임스탬프는 초 단위까지
+    정확히 일치했다(같은 체결에 대한 두 기록이므로 당연하다).
+
+    한계: 지금 컨테이너가 떠 있지 않은 봇(예: 중단된 v1, 예전 추세추종/평균회귀)의
+    과거 청산은 이 함수가 알 방법이 없어 "수동"으로 잘못 표시될 수 있다. BOTS에
+    현재 등록된 봇들의 최근 거래만 걸러낼 수 있다.
+    """
+    keys = set()
+    for bot in BOTS:
+        try:
+            trades = call_bot(bot["url"], "/api/v1/trades", {"limit": 500}).get("trades", [])
+        except Exception:  # noqa: BLE001
+            continue
+        for t in trades:
+            if t.get("is_open") or not t.get("close_date"):
+                continue
+            sym = t["pair"].split(":")[0].replace("/", "")
+            try:
+                ts = int(
+                    datetime.strptime(t["close_date"], "%Y-%m-%d %H:%M:%S")
+                    .replace(tzinfo=timezone.utc)
+                    .timestamp()
+                )
+            except ValueError:
+                continue
+            keys.add((sym, ts))
+    return keys
+
+
+def _closing_fill_info(symbol: str, trade_ids: list, around_ms: int) -> dict:
+    """청산을 이룬 체결들을 userTrades 에서 찾아 방향/평균가를 복원한다.
+
+    income(REALIZED_PNL) 이벤트 자체에는 방향(롱/숏)이 없다 - 체결 기록에서
+    가져와야 한다. tradeId 로 정확히 매칭하고, 실패하면 같은 시간대에 손익이
+    실현된 체결(=청산 체결)로 갈음한다.
+    """
+    try:
+        fills = binance_signed(
+            "/fapi/v1/userTrades",
+            {
+                "symbol": symbol,
+                "startTime": around_ms - 5 * 60 * 1000,
+                "endTime": around_ms + 60 * 1000,
+                "limit": 200,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        return {}
+    ids = {i for i in trade_ids if i is not None}
+    matched = [f for f in fills if f.get("id") in ids]
+    if not matched:
+        matched = [f for f in fills if abs(float(f.get("realizedPnl", 0) or 0)) > 1e-9]
+    if not matched:
+        return {}
+    qty = sum(float(f["qty"]) for f in matched)
+    if qty <= 0:
+        return {}
+    avg_price = sum(float(f["price"]) * float(f["qty"]) for f in matched) / qty
+    # SELL 체결로 손익이 실현됐다면 롱을 줄인 것(청산된 포지션은 롱이었다).
+    # BUY 체결로 실현됐다면 숏을 줄인 것.
+    is_short = matched[0].get("side") == "BUY"
+    return {"is_short": is_short, "avg_price": avg_price, "qty": qty}
+
+
+# 화면(전체 청산 이력)은 봇 기록과 합쳐 최근 15건만 보여준다. 그래서 굳이
+# 넓게 긁을 필요가 없고, 넓게 긁으면 건마다 userTrades 조회가 붙어 느려진다
+# (실측: 30일치 94건 조회에 30초). 최근 며칠 + 최대 20건으로 제한한다.
+MANUAL_HISTORY_LOOKBACK_MS = 7 * 24 * 3600 * 1000  # 최근 7일
+MANUAL_HISTORY_MAX_EPISODES = 20
+
+# income + userTrades 를 함께 물어야 해서 봇 조회보다 훨씬 무겁고, 수동 청산은
+# 자주 일어나지 않으므로 길게 캐시한다 (대시보드는 4초마다 갱신됨).
+_manual_history_cache = {"ts": 0.0, "data": None}
+MANUAL_HISTORY_TTL = 180
+
+
+def fetch_manual_trade_history() -> list[dict]:
+    """계좌 실현손익 중 봇이 기록하지 않은 것 = 사람이 거래소에서 직접 처리한 청산.
+
+    /fapi/v1/income(REALIZED_PNL) 은 계좌 전체의 실현손익을 봇/수동 구분 없이 준다.
+    _bot_closed_keys() 와 겹치는 항목은 이미 봇의 recent_trades 로 표시되므로 뺀다.
+    남는 항목은 봇 화이트리스트에 아예 없는 페어(TQQQ 등)이거나, 화이트리스트 안이라도
+    봇 DB에 없는 시각의 청산 - 둘 다 사람이 직접 처리한 것이다.
+    """
+    now = time.time()
+    if (
+        _manual_history_cache["data"] is not None
+        and now - _manual_history_cache["ts"] < MANUAL_HISTORY_TTL
+    ):
+        return _manual_history_cache["data"]
+
+    try:
+        raw = binance_signed(
+            "/fapi/v1/income",
+            {
+                "incomeType": "REALIZED_PNL",
+                "startTime": int(now * 1000) - MANUAL_HISTORY_LOOKBACK_MS,
+                "limit": 1000,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        _manual_history_cache.update({"ts": now, "data": []})
+        return []
+
+    bot_keys = _bot_closed_keys()
+    raw.sort(key=lambda x: (x["symbol"], x["time"]))
+
+    # 같은 청산이 부분체결로 여러 건 잡히는 경우가 실측에서 있었다(TQQQ 사례).
+    # 같은 심볼에서 몇 초 안에 몰린 항목들을 하나의 청산으로 묶는다.
+    # 주의: 이 시점의 episodes는 심볼별로 그룹된 뒤 시간순이 아니므로, 아래에서
+    # last_time 기준으로 다시 정렬한 뒤에야 "최근 것"을 골라낼 수 있다.
+    episodes: list[dict] = []
+    for x in raw:
+        sym = x["symbol"]
+        sec = x["time"] // 1000
+        if any((sym, sec + d) in bot_keys for d in (-1, 0, 1)):
+            continue  # 봇이 이미 기록한 청산
+        if episodes and episodes[-1]["symbol"] == sym and x["time"] - episodes[-1]["last_time"] <= 5000:
+            ep = episodes[-1]
+            ep["income"] += float(x["income"])
+            ep["trade_ids"].append(x.get("tradeId"))
+            ep["last_time"] = x["time"]
+        else:
+            episodes.append(
+                {
+                    "symbol": sym,
+                    "income": float(x["income"]),
+                    "trade_ids": [x.get("tradeId")],
+                    "last_time": x["time"],
+                }
+            )
+
+    # 화면에 보일 만큼(최근 것)만 남긴다. 여기서 자르지 않으면 활발히 수동
+    # 매매하는 계좌에서는 episode마다 userTrades 조회가 붙어 캐시 갱신 때마다
+    # 수십 초씩 걸린다(실측됨).
+    episodes.sort(key=lambda e: e["last_time"], reverse=True)
+    episodes = episodes[:MANUAL_HISTORY_MAX_EPISODES]
+
+    out = []
+    for ep in episodes:
+        info = _closing_fill_info(ep["symbol"], ep["trade_ids"], ep["last_time"])
+        pct = None
+        if info.get("avg_price") and info.get("qty"):
+            pct = ep["income"] / (info["avg_price"] * info["qty"]) * 100
+        out.append(
+            {
+                "pair": ep["symbol"].replace("USDT", "") + "/USDT",
+                "is_short": info.get("is_short"),
+                "close_profit_abs": ep["income"],
+                "close_profit_pct": pct,
+                "close_date": datetime.fromtimestamp(ep["last_time"] / 1000, timezone.utc).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+                "exit_reason": "manual",
+                "exit_reason_ko": "수동 청산 (거래소 직접)",
+            }
+        )
+    out.sort(key=lambda x: x["close_date"], reverse=True)
+    _manual_history_cache.update({"ts": now, "data": out})
+    return out
+
 
 # freqtrade가 보내는 상태/경고/오류 메시지는 자유 형식 영어 문장이라 완벽한 번역은
 # 불가능함. 자주 나오는 패턴만 골라 한글로 바꿔주고, 매칭 안 되는 문장은 원문을
