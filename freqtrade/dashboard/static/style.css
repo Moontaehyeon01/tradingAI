@@ -604,6 +604,24 @@ table.pos-table { width: 100%; border-collapse: collapse; }
    중일 때) 표끼리 붙어 보이지 않도록 간격을 둔다. */
 #signalGroups .table-scroll + .table-scroll { margin-top: 18px; }
 
+/* 접이식 패널 (미체결 주문 그룹 펼치기와 같은 캐럿 클릭 방식).
+   [hidden] 은 브라우저 기본 스타일이라 우선순위가 낮아서, 이 프로젝트에서
+   과거에 직접 정의한 규칙(예: flex)에 덮어씌워진 적이 있다 - 여기서도 같은
+   함정을 피하려고 대상 자체에 명시적으로 display:none 을 강제한다. */
+.panel-head-collapsible { cursor: pointer; user-select: none; }
+.panel-head-collapsible:hover .panel-title { color: var(--blue); }
+.panel-caret {
+  display: inline-block;
+  width: 12px;
+  color: var(--text-faint);
+  font-size: 11px;
+  margin-left: 10px;
+}
+#signalGroups[hidden],
+#historyBody[hidden] {
+  display: none !important;
+}
+
 /* 모바일 하단 네비게이션 — 기본(데스크톱)은 숨김 */
 .mobile-nav { display: none; }
 

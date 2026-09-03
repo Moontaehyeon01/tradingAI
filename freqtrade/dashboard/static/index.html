@@ -188,11 +188,16 @@
       </section>
 
       <section id="section-signals" class="panel">
-        <div class="panel-head">
+        <!-- 미체결 주문의 그룹 펼치기와 같은 방식(캐럿 클릭)으로 패널 전체를
+             접었다 펼 수 있게 했다 - 페이지가 세로로 너무 길어져서 자주 안 보는
+             패널은 접어둘 수 있어야 한다는 요청. app.js의 initCollapsiblePanels가
+             처리한다. -->
+        <div class="panel-head panel-head-collapsible" data-collapse-target="signalGroups">
           <div>
             <div class="panel-title">진입 조건 현황</div>
             <div class="panel-sub" id="signalNote">불러오는 중…</div>
           </div>
+          <span class="panel-caret">▾</span>
         </div>
         <!-- 봇마다 진입 조건의 성격이 달라(박스 돌파 vs 순위 기반 롱숏) 표 구조 자체가
              다르다. 정지된 봇은 signals.js가 서버 응답에서 아예 안 보내주므로
@@ -240,14 +245,15 @@
       </section>
 
       <section id="section-history" class="panel">
-        <div class="panel-head">
+        <div class="panel-head panel-head-collapsible" data-collapse-target="historyBody">
           <div>
             <div class="panel-title">전체 청산 이력</div>
             <div class="panel-sub">최근 체결 기준</div>
           </div>
+          <span class="panel-caret">▾</span>
         </div>
         <!-- 좁은 화면에서 표가 페이지 전체를 옆으로 밀지 않도록 표만 따로 가로 스크롤 -->
-        <div class="table-scroll">
+        <div class="table-scroll" id="historyBody">
           <table class="history-table" id="historyTable">
             <thead>
               <tr><th>전략</th><th>페어</th><th>방향</th><th>손익%</th><th>손익$</th><th>청산사유</th><th>시각</th></tr>
