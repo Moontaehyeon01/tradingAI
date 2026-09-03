@@ -410,6 +410,11 @@ function renderDonut(summary) {
     if (!b.connected) return;
     b.open_trades.forEach((t) => (t.is_short ? shorts++ : longs++));
   });
+  // 봇이 여는 포지션뿐 아니라 계좌에 실제로 떠 있는 수동 포지션도 방향에 넣는다
+  // (server.py 의 manual_longs/manual_shorts - 화이트리스트 밖 페어라 봇은
+  // 존재 자체를 모르는 포지션까지 바이낸스 직접 조회로 잡아온다).
+  longs += summary.combined.manual_longs || 0;
+  shorts += summary.combined.manual_shorts || 0;
 
   const total = longs + shorts;
   const legend = document.getElementById("donutLegend");

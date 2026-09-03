@@ -768,11 +768,12 @@ def api_summary():
     # 잡힌다 - 그동안 QQQ 롱처럼 봇이 모르는 포지션이 있어도 "보유 포지션 0"
     # 으로 잘못 표시됐다.
     acct = fetch_account()
-    manual_position_count = (
-        sum(1 for p in acct.get("positions", []) if not p.get("managed"))
-        if acct.get("ok")
-        else 0
-    )
+    manual_positions = [p for p in acct.get("positions", []) if not p.get("managed")] if acct.get("ok") else []
+    manual_position_count = len(manual_positions)
+    # 포지션 방향(도넛) 위젯도 봇 포지션만 세고 있었다 - 수동 포지션의
+    # 롱/숏 개수를 따로 내서 프론트가 봇 것과 합산하게 한다.
+    manual_longs = sum(1 for p in manual_positions if p.get("side") == "long")
+    manual_shorts = sum(1 for p in manual_positions if p.get("side") == "short")
 
     return jsonify(
         {
@@ -786,6 +787,8 @@ def api_summary():
                 # 누적손익추이 차트에서 "수동" 시리즈로 그릴 최근 14일 일별 손익
                 "manual_daily": manual_pnl.get("daily", []),
                 "manual_position_count": manual_position_count,
+                "manual_longs": manual_longs,
+                "manual_shorts": manual_shorts,
                 "total_profit_pct": (total_profit_abs / total_starting * 100) if total_starting else 0,
                 "unmanaged_positions": list(unmanaged.values()),
                 # 청산 이력 테이블에서 봇 기록과 합쳐서 보여줄 수동 청산들.
@@ -1309,9 +1312,97 @@ def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
+def _notif_dedup_key(pair: str, when_iso: str) -> tuple:
+    # 초 단위까지만 비교한다. 실시간 웹훅 알림의 time(기록 시각)과 백필의
+    # close_date(실제 청산 시각)는 초 단위로는 사실상 같다 - 웹훅이 체결
+    # 직후 오기 때문이다.
+    return (pair, when_iso[:19])
+
+
+def backfill_notifications() -> int:
+    """청산 이력(봇 + 수동)에는 있는데 '최근 알림'엔 없는 것들을 시간순으로
+    채워 넣는다.
+
+    실시간 웹훅을 놓친 경우(대시보드가 잠깐 죽어 있던 사이 청산된 것 등)나,
+    수동 청산처럼 애초에 실시간으로 안 잡히는 것들이 대상이다. pair+초 단위
+    시각으로 이미 있는 알림과 겹치는지 걸러내므로, 서버를 몇 번을 재시작해도
+    중복으로 쌓이지 않는다.
+    """
+    existing = {
+        _notif_dedup_key(n["pair"], n["time"])
+        for n in notifications
+        if n.get("pair") and n.get("time")
+    }
+
+    items = []
+    for bot in BOTS:
+        try:
+            summary = fetch_bot_summary(bot)
+        except Exception:  # noqa: BLE001
+            continue
+        for t in summary.get("recent_trades", []):
+            if not t.get("close_date"):
+                continue
+            items.append(
+                {
+                    "bot_name": bot["name"],
+                    "pair": t["pair"],
+                    "is_short": t.get("is_short"),
+                    "profit_ratio_pct": t.get("close_profit_pct"),
+                    "profit_amount": t.get("close_profit_abs"),
+                    "exit_reason_ko": t.get("exit_reason_ko"),
+                    "close_date": t["close_date"],
+                }
+            )
+    for t in fetch_manual_trade_history():
+        items.append(
+            {
+                "bot_name": "수동",
+                "pair": t["pair"],
+                "is_short": t.get("is_short"),
+                "profit_ratio_pct": t.get("close_profit_pct"),
+                "profit_amount": t.get("close_profit_abs"),
+                "exit_reason_ko": t.get("exit_reason_ko"),
+                "close_date": t["close_date"],
+            }
+        )
+
+    # 오래된 것부터 순서대로 appendleft 해야 최종적으로 최신이 맨 앞에 온다
+    # (notifications 파일을 처음 불러올 때 쓰는 것과 같은 원리 - 위 주석 참고).
+    items.sort(key=lambda x: x["close_date"])
+    added = 0
+    for t in items:
+        when_iso = t["close_date"].replace(" ", "T") + "+00:00"
+        key = _notif_dedup_key(t["pair"], when_iso)
+        if key in existing:
+            continue
+        record_notification(
+            {
+                "time": when_iso,
+                "event": "exit_fill",
+                "bot_name": t["bot_name"],
+                "pair": t["pair"],
+                "is_short": t["is_short"],
+                "profit_ratio_pct": t["profit_ratio_pct"],
+                "profit_amount": t["profit_amount"],
+                "stake_currency": "USDT",
+                "exit_reason_ko": t["exit_reason_ko"],
+            }
+        )
+        existing.add(key)
+        added += 1
+    return added
+
+
 if __name__ == "__main__":
     # 로컬 개발 시엔 기본값(127.0.0.1)만 노출됨. 서버에 배포해서 외부 접속을
     # 받아야 할 때만 DASHBOARD_HOST=0.0.0.0 을 명시적으로 지정해서 실행할 것
     # (보안그룹 등 방화벽에서 이미 접근을 제한하고 있어야 안전함)
     host = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
+    try:
+        n = backfill_notifications()
+        print(f"[startup] 청산 이력에서 알림 {n}건 채움")
+    except Exception as exc:  # noqa: BLE001
+        # 봇 컨테이너가 아직 안 떠 있는 등으로 실패해도 대시보드 자체는 떠야 한다
+        print(f"[startup] 알림 백필 실패(무시하고 계속): {exc}")
     app.run(host=host, port=5000, debug=False)

@@ -2,7 +2,12 @@
     "max_open_trades": 2,
     "stake_currency": "USDT",
     "stake_amount": "unlimited",
-    "tradable_balance_ratio": 0.5,
+    # 정지 상태라 신규 진입은 안 하지만, /api/v1/balance 는 이 값을 그대로
+    # 곱해서 "봇 소유 잔고"를 계산해 대시보드 봇 카드에 보여준다. 0.5로 두면
+    # 정지 중에도 카드에 계속 잔고가 남아있는 것처럼 보인다(실측: XSectMomentum
+    # 으로 잔고를 몰아준 뒤에도 이 값이 그대로라 화면이 안 바뀐 것처럼 보였다).
+    # 0에 가깝게 낮춰서 이 봇이 화면에서도 잔고를 안 쥐고 있게 한다.
+    "tradable_balance_ratio": 0.01,
     "fiat_display_currency": "USD",
     "timeframe": "1h",
     "dry_run": false,
