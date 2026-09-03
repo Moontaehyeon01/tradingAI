@@ -72,7 +72,7 @@ BOTS = [
     # 횡단면 모멘텀은 박스가 없다. box_max_width 를 안 주면 진입 조건 패널이
     # 이 봇의 페어를 건너뛴다 (fetch_signals 가 box_width 컬럼을 요구하므로).
     {"id": "xsectmomentum", "name": "XSectMomentum (횡단면 모멘텀)",
-     "url": "http://127.0.0.1:8087", "leverage": 3,
+     "url": "http://127.0.0.1:8087", "leverage": 2,
      "max_hold_h": 72},
     # v1은 2026-08-28 격자탐색 결과 v2 조합(박스12봉/폭4%/익절35%/48h)이 학습·홀드아웃
     # 양쪽에서 더 나아서 중단함. 되살리려면 아래 줄과 docker compose 서비스를 함께.
