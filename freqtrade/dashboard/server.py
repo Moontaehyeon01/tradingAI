@@ -917,9 +917,15 @@ def _income_realized_pnl(start_ms: int) -> list[dict]:
 
 
 # 손익 합계는 체결 방향 복원이 필요 없어 표시용 이력보다 훨씬 가볍다. 그래서
-# "총 손익"에 넣을 수동 매매분은 훨씬 넓게(1년) 본다 - 화면에 보일 몇 건만
-# 걷어오면 되는 이력 표시와는 성격이 다르다.
-MANUAL_PNL_LOOKBACK_MS = 365 * 24 * 3600 * 1000  # 최근 1년
+# 상대적인 "최근 N일" 대신 "이 프로그램으로 실전 매매를 시작한 시점" 이후로
+# 고정 기준일을 둔다.
+#
+# 처음엔 롤링 1년을 썼는데, 실제로 확인해보니 이 계좌에는 이 프로젝트와 무관한
+# 2026-03/06월의 오래된 손실(-38, -82 등)이 섞여 있어서 "요즘은 수동으로 번
+# 것밖에 없는데 왜 마이너스냐"는 착시를 만들었다. 롤링 윈도우는 시간이 지나면
+# 8월 거래까지 잘라먹으므로, 날짜를 고정해야 한다.
+MANUAL_PNL_START = datetime(2026, 8, 1, tzinfo=timezone.utc)
+MANUAL_PNL_START_MS = int(MANUAL_PNL_START.timestamp() * 1000)
 
 _manual_pnl_cache = {"ts": 0.0, "data": None}
 MANUAL_PNL_TTL = 180
@@ -936,7 +942,7 @@ def fetch_manual_pnl_total() -> float | None:
         return _manual_pnl_cache["data"]
 
     try:
-        raw = _income_realized_pnl(int(now * 1000) - MANUAL_PNL_LOOKBACK_MS)
+        raw = _income_realized_pnl(MANUAL_PNL_START_MS)
     except Exception:  # noqa: BLE001
         # 실패해도 직전 값을 유지한다(없으면 None) - 다만 ts는 갱신해야 한다.
         # 안 그러면 캐시가 계속 만료 상태로 남아 폴링마다(4초) 재시도하게 된다.
