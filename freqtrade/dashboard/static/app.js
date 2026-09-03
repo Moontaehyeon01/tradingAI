@@ -12,6 +12,9 @@ let sideDonut = null;
 let lastSummary = null;
 let lastSeenAlertTime = null; // 새로 도착한 알림만 구분해서 소리 재생하기 위한 기준점
 let audioCtx = null;
+// 누적손익추이 그래프 기간. 서버가 14/30/60 만 허용하므로(api_summary 참고)
+// 여기서도 이 세 값만 쓴다. refresh() 가 이 값을 그대로 쿼리스트링에 싣는다.
+let equityDays = 14;
 
 // 브라우저는 사용자가 페이지를 한 번이라도 클릭/터치하기 전엔 소리 재생을 막음(자동재생 정책)
 // -> 첫 클릭 때 AudioContext를 만들어두고 이후 알림음은 그걸 재사용
@@ -221,7 +224,7 @@ function renderStats(summary) {
       summary.combined.manual_profit_abs === null
         ? "수동 조회 실패"
         : `수동 $${fmtUsd(summary.combined.manual_profit_abs)}`;
-    pnlNote.textContent = `${botTxt} · ${manualTxt} (8월~ 집계)`;
+    pnlNote.textContent = `${botTxt} · ${manualTxt} (8/14~ 집계)`;
   }
 
   // 보유 포지션은 봇이 여는 것뿐 아니라 계좌에 실제로 떠 있는 수동 포지션도
@@ -258,6 +261,9 @@ function hexToRgba(hex, a) {
 
 function renderEquityChart(summary) {
   const ctx = document.getElementById("equityChart");
+
+  const sub = document.getElementById("equitySub");
+  if (sub) sub.textContent = `최근 ${equityDays}일 · 전략별`;
 
   const cumulative = (daily) => {
     let acc = 0;
@@ -732,6 +738,22 @@ document.getElementById("historyPager")?.addEventListener("click", (e) => {
   }
 });
 
+// 누적손익추이 기간 버튼. 이 버튼들은 정적 마크업(index.html)이라 다시
+// 그려지지 않으므로 historyPager 처럼 위임할 필요는 없지만, 같은 형태로
+// 맞춰뒀다. days 는 서버(api_summary)가 실제로 쓰는 timescale 이라 값이
+// 바뀌면 다음 폴링(4초)을 기다리지 않고 바로 다시 불러온다.
+document.getElementById("equityPeriodToggle")?.addEventListener("click", (e) => {
+  const btn = e.target.closest(".period-btn");
+  if (!btn) return;
+  const days = Number(btn.dataset.days);
+  if (!days || days === equityDays) return;
+  equityDays = days;
+  document
+    .querySelectorAll("#equityPeriodToggle .period-btn")
+    .forEach((b) => b.classList.toggle("active", b === btn));
+  refresh();
+});
+
 /* ---------------- Alerts feed ---------------- */
 
 // alerts는 최신순 정렬(맨 앞이 가장 최근). 마지막으로 확인한 시각보다 새로운
@@ -860,7 +882,7 @@ async function refresh() {
   // 잠깐 흔들려도 이미 잘 받아온 봇 데이터까지 화면에 반영을 못 함.
   // allSettled로 바꿔서 성공한 것만이라도 반영하고, 실패한 것만 원인을 구분해서 알려줌.
   const [summaryRes, tickersRes, alertsRes] = await Promise.allSettled([
-    fetchJSON("/api/summary"),
+    fetchJSON(`/api/summary?days=${equityDays}`),
     fetchJSON("/api/tickers"),
     fetchJSON("/api/notifications"),
   ]);

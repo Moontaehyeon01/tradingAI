@@ -373,6 +373,35 @@ body {
 }
 .dotcolor { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
 
+/* 누적손익추이 기간 선택 (14/30/60일) - 범례 위에 쌓아서 오른쪽 정렬 */
+.equity-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+.period-toggle {
+  display: flex;
+  gap: 2px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+}
+.period-btn {
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: var(--text-dim);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.period-btn:hover { color: var(--text); }
+.period-btn.active { background: var(--blue); color: #fff; }
+
 /* Chart.js는 캔버스를 감싼 박스 크기를 기준으로 반응형 리사이즈를 하는데,
    박스 높이가 고정돼있지 않으면 매 리사이즈마다 계속 커지거나 찌그러지는
    문제가 생김 -> position:relative + 고정 height 박스로 명확히 잡아줌 */

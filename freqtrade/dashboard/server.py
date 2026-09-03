@@ -564,7 +564,7 @@ def api_account():
     return jsonify(fetch_account())
 
 
-def fetch_bot_summary(bot: dict) -> dict:
+def fetch_bot_summary(bot: dict, days: int = 14) -> dict:
     out = {"id": bot["id"], "name": bot["name"], "leverage": bot.get("leverage", 1), "connected": False}
     try:
         balance = call_bot(bot["url"], "/api/v1/balance")
@@ -575,7 +575,8 @@ def fetch_bot_summary(bot: dict) -> dict:
         # "가장 오래된" 거래들이 잘려 들어온다. 넉넉히 받아서 아래에서
         # close_date 기준으로 직접 재정렬한다.
         recent = call_bot(bot["url"], "/api/v1/trades", {"limit": 500})
-        daily = call_bot(bot["url"], "/api/v1/daily", {"timescale": 14})
+        # 누적손익추이 그래프의 기간 선택(14/30/60일)에 맞춰 조회한다.
+        daily = call_bot(bot["url"], "/api/v1/daily", {"timescale": days})
         config = call_bot(bot["url"], "/api/v1/show_config")
 
         # freqtrade의 balance.total_bot 필드는 신뢰 불가:
@@ -745,7 +746,13 @@ def api_bot_control(bot_id: str, action: str):
 
 @app.get("/api/summary")
 def api_summary():
-    bots = [fetch_bot_summary(b) for b in BOTS]
+    # 누적손익추이 그래프의 기간 선택. 정해둔 값 밖이면(URL 조작 등) 기본값으로
+    # 조용히 되돌린다 - 임의의 timescale 을 그대로 각 봇에 흘려보내고 싶지 않다.
+    days = request.args.get("days", 14, type=int)
+    if days not in (14, 30, 60):
+        days = 14
+
+    bots = [fetch_bot_summary(b, days=days) for b in BOTS]
     connected = [b for b in bots if b.get("connected")]
 
     # 총자산: 모든 봇이 같은 바이낸스 계좌를 공유하므로 합산하면 중복 계산이 된다.
@@ -756,7 +763,7 @@ def api_summary():
     bot_profit_abs = sum(b.get("profit_all_abs", 0) for b in connected)
     # 수동 매매 손익(계좌 실현손익 중 봇이 기록하지 않은 부분). 조회 실패 시 None -
     # 그 경우 총손익은 봇 손익만으로 계산해 화면이 완전히 비진 않게 한다.
-    manual_pnl = fetch_manual_pnl()
+    manual_pnl = fetch_manual_pnl(days=days)
     manual_profit_abs = manual_pnl.get("total")
     total_profit_abs = bot_profit_abs + (manual_profit_abs or 0)
 
@@ -971,35 +978,32 @@ def _income_realized_pnl(start_ms: int) -> list[dict]:
 # 2026-03/06월의 오래된 손실(-38, -82 등)이 섞여 있어서 "요즘은 수동으로 번
 # 것밖에 없는데 왜 마이너스냐"는 착시를 만들었다. 롤링 윈도우는 시간이 지나면
 # 8월 거래까지 잘라먹으므로, 날짜를 고정해야 한다.
-MANUAL_PNL_START = datetime(2026, 8, 1, tzinfo=timezone.utc)
+MANUAL_PNL_START = datetime(2026, 8, 14, tzinfo=timezone.utc)
 MANUAL_PNL_START_MS = int(MANUAL_PNL_START.timestamp() * 1000)
 
-_manual_pnl_cache = {"ts": 0.0, "data": None}
+# income 조회(및 total 합계)는 그래프 기간(14/30/60일)과 무관하게 항상
+# MANUAL_PNL_START 이후 전체를 봐야 한다 - 캐시를 여기서 한 번만 하고,
+# 기간별 daily 슬라이스는 그 위에서 API 재호출 없이 즉시 계산한다.
+_manual_pnl_raw_cache = {"ts": 0.0, "data": None}
 MANUAL_PNL_TTL = 180
 
 
-def fetch_manual_pnl() -> dict:
-    """전체 계좌 실현손익 중 봇이 기록하지 않은 부분 = 수동 매매 손익.
-
-    총합("total")과 최근 14일 일별 시리즈("daily")를 함께 낸다 - 봇의
-    /api/v1/daily 도 timescale=14 라서, 누적손익추이 차트에 같은 창으로
-    나란히 그릴 수 있게 맞췄다. 같은 income 조회를 재사용하므로 별도로
-    부르는 것보다 API 호출이 늘지 않는다.
-
-    total 이 None이면 조회 실패다 - 0으로 조용히 채우면 "수동 매매로 손익이
-    전혀 없다"와 "지금 조회가 안 된다"가 화면에서 구분이 안 된다.
-    """
+def _fetch_manual_pnl_raw() -> tuple:
+    """(총합, 수동으로 분류된 income 원본 목록). 실패하면 (None, [])."""
     now = time.time()
-    if _manual_pnl_cache["data"] is not None and now - _manual_pnl_cache["ts"] < MANUAL_PNL_TTL:
-        return _manual_pnl_cache["data"]
+    if (
+        _manual_pnl_raw_cache["data"] is not None
+        and now - _manual_pnl_raw_cache["ts"] < MANUAL_PNL_TTL
+    ):
+        return _manual_pnl_raw_cache["data"]
 
     try:
         raw = _income_realized_pnl(MANUAL_PNL_START_MS)
     except Exception:  # noqa: BLE001
         # 실패해도 직전 값을 유지한다(없으면 빈 결과) - 다만 ts는 갱신해야 한다.
         # 안 그러면 캐시가 계속 만료 상태로 남아 폴링마다(4초) 재시도하게 된다.
-        _manual_pnl_cache["ts"] = now
-        return _manual_pnl_cache["data"] or {"total": None, "daily": []}
+        _manual_pnl_raw_cache["ts"] = now
+        return _manual_pnl_raw_cache["data"] or (None, [])
 
     bot_keys = _bot_closed_keys()
     manual = [
@@ -1007,6 +1011,25 @@ def fetch_manual_pnl() -> dict:
         if not any((x["symbol"], x["time"] // 1000 + d) in bot_keys for d in (-1, 0, 1))
     ]
     total = sum(float(x["income"]) for x in manual)
+    result = (total, manual)
+    _manual_pnl_raw_cache.update({"ts": now, "data": result})
+    return result
+
+
+def fetch_manual_pnl(days: int = 14) -> dict:
+    """전체 계좌 실현손익 중 봇이 기록하지 않은 부분 = 수동 매매 손익.
+
+    총합("total")은 항상 MANUAL_PNL_START(8/14) 이후 전체 기준이고, 그래프
+    기간 선택(14/30/60일)과 무관하다. "daily"만 그 기간에 맞춰 슬라이스한다
+    - 봇의 /api/v1/daily 도 같은 timescale 로 조회해서 차트에 같은 창으로
+    나란히 그릴 수 있게 맞췄다.
+
+    total 이 None이면 조회 실패다 - 0으로 조용히 채우면 "수동 매매로 손익이
+    전혀 없다"와 "지금 조회가 안 된다"가 화면에서 구분이 안 된다.
+    """
+    total, manual = _fetch_manual_pnl_raw()
+    if total is None:
+        return {"total": None, "daily": []}
 
     by_day: dict = {}
     for x in manual:
@@ -1023,12 +1046,10 @@ def fetch_manual_pnl() -> dict:
             "abs_profit": by_day.get(today - timedelta(days=i), 0.0),
             "starting_balance": 0,
         }
-        for i in range(13, -1, -1)
+        for i in range(days - 1, -1, -1)
     ]
 
-    result = {"total": total, "daily": daily}
-    _manual_pnl_cache.update({"ts": now, "data": result})
-    return result
+    return {"total": total, "daily": daily}
 
 
 # 화면(전체 청산 이력)은 봇 기록과 합쳐 최근 15건만 보여준다. 그래서 굳이

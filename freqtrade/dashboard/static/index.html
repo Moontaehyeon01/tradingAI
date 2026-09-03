@@ -217,10 +217,18 @@
           <div class="panel-head">
             <div>
               <div class="panel-title">누적 손익 추이</div>
-              <div class="panel-sub">최근 14일 · 전략별</div>
+              <div class="panel-sub" id="equitySub">최근 14일 · 전략별</div>
             </div>
-            <div class="legend" id="equityLegend">
-              <!-- 실제 가동 중인 봇에 맞춰 app.js가 채움 -->
+            <div class="equity-controls">
+              <!-- 클릭은 app.js가 위임(delegation)으로 처리한다 -->
+              <div class="period-toggle" id="equityPeriodToggle">
+                <button class="period-btn active" data-days="14">14일</button>
+                <button class="period-btn" data-days="30">30일</button>
+                <button class="period-btn" data-days="60">60일</button>
+              </div>
+              <div class="legend" id="equityLegend">
+                <!-- 실제 가동 중인 봇에 맞춰 app.js가 채움 -->
+              </div>
             </div>
           </div>
           <div class="chart-canvas-wrap">
