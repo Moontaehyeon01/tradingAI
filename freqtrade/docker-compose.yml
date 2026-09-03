@@ -156,6 +156,38 @@ services:
       --config /freqtrade/user_data/config.json
       --strategy BoxBreakoutV2Strategy
 
+  # 횡단면 모멘텀 (시장중립 롱숏). 2026-09-03 추가.
+  # 다른 전략들과 달리 페어 전체를 줄 세워야 하므로 감시 페어가 19개다.
+  # 같은 바이낸스 계좌를 BoxBreakoutV2 와 공유하므로 증거금이 서로 경쟁한다 -
+  # 둘 다 켜두면 어느 쪽도 필요한 만큼 못 여는 상황이 생길 수 있다.
+  freqtrade-xsect-momentum-futures:
+    image: freqtradeorg/freqtrade:stable
+    container_name: freqtrade-xsect-momentum-futures
+    restart: unless-stopped
+    profiles: ["futures"]
+    env_file:
+      - ../.env
+    environment:
+      # .env 의 FREQTRADE__TELEGRAM__ENABLED 가 config 를 덮어쓰기 때문에,
+      # 여기서 다시 꺼야 한다. 텔레그램 토큰은 하나뿐이라 두 봇이 동시에
+      # getUpdates 를 폴링하면 Conflict 로 계속 에러가 난다.
+      # 알림은 webhook -> 대시보드 릴레이로 나가므로 이걸 꺼도 알림은 온다.
+      - FREQTRADE__TELEGRAM__ENABLED=false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # 설정은 파일 하나짜리 bind mount다. 수정 후에는 반드시 recreate 할 것
+      # (sed -i 로 고치면 inode가 바뀌어 컨테이너가 옛 내용을 계속 읽는다).
+      - ./config_xsect_momentum_futures.json:/freqtrade/user_data/config.json
+      - ./strategies:/freqtrade/user_data/strategies
+      - ./user_data:/freqtrade/user_data
+    ports:
+      - "127.0.0.1:8087:8087"
+    command: >
+      trade
+      --config /freqtrade/user_data/config.json
+      --strategy XSectMomentumStrategy
+
   # 예전엔 XRP를 별도 봇 인스턴스(freqtrade-trend-xrp-futures 등)로 분리했었으나,
   # 계좌 잔고를 추세추종/평균회귀 계열끼리 공유하기 위해 통합함. 지금은
   # MultiConfluenceStrategy/MeanReversionStrategy 안에서 페어가 XRP일 때만
