@@ -224,14 +224,24 @@ function renderStats(summary) {
     pnlNote.textContent = `${botTxt} · ${manualTxt} (8월~ 집계)`;
   }
 
-  const openCount = connectedBots.reduce((sum, b) => sum + b.open_trades.length, 0);
+  // 보유 포지션은 봇이 여는 것뿐 아니라 계좌에 실제로 떠 있는 수동 포지션도
+  // 세야 정확하다 - manual_position_count 는 바이낸스를 직접 봐서 화이트리스트
+  // 밖 페어(QQQ 등)도 잡는다(server.py 참고). 이게 빠지면 수동 포지션이 있어도
+  // "보유 포지션 0" 으로 잘못 나온다.
+  const openCount =
+    connectedBots.reduce((sum, b) => sum + b.open_trades.length, 0) +
+    (summary.combined.manual_position_count || 0);
   document.getElementById("statOpenCount").textContent = openCount;
 
   const totalTrades = connectedBots.reduce((sum, b) => sum + (b.trade_count || 0), 0);
-  const avgWinrate =
-    connectedBots.length > 0
-      ? connectedBots.reduce((sum, b) => sum + (b.winrate || 0), 0) / connectedBots.length
-      : 0;
+  // 봇별 승률을 단순 평균하면 안 된다 - 거래가 0건인 봇(예: 막 시작한 봇)도
+  // 승률 0%로 평균에 끼어들어 전체 승률을 실제보다 낮게 왜곡한다. 거래수로
+  // 가중평균해야 "전체 거래 중 이긴 비율"이라는 원래 의미가 맞다.
+  const totalWins = connectedBots.reduce(
+    (sum, b) => sum + (b.trade_count || 0) * (b.winrate || 0),
+    0
+  );
+  const avgWinrate = totalTrades > 0 ? totalWins / totalTrades : 0;
   document.getElementById("statWinrate").textContent = `${(avgWinrate * 100).toFixed(1)}%`;
   document.getElementById("statTradeCount").textContent = `${totalTrades} 거래`;
 }
@@ -273,6 +283,17 @@ function renderEquityChart(summary) {
       color: BOT_COLORS[i % BOT_COLORS.length],
       daily: b.daily || [],
     }));
+  // 수동 매매도 봇과 같은 그래프에 한 시리즈로 얹는다 - server.py 의
+  // manual_daily 가 봇 daily 와 같은 창(최근 14일)으로 맞춰서 나온다.
+  // 값이 전부 0인 빈 시리즈를 만들지 않도록, 실제로 손익이 있을 때만 넣는다.
+  const manualDaily = summary.combined?.manual_daily || [];
+  if (manualDaily.some((d) => Math.abs(d.abs_profit) > 0.0001)) {
+    series.push({
+      label: "수동",
+      color: BOT_COLORS[series.length % BOT_COLORS.length],
+      daily: manualDaily,
+    });
+  }
 
   const longest = series.reduce(
     (best, s) => (s.daily.length > best.length ? s.daily : best),
