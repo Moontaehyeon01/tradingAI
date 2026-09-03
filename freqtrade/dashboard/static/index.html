@@ -99,6 +99,7 @@
           <div class="stat-body">
             <span class="stat-label">총 손익</span>
             <span class="stat-value" id="statPnl">–</span>
+            <span class="stat-note" id="statPnlBreakdown"></span>
           </div>
           <span class="stat-chip" id="statPnlChip">–</span>
         </div>
@@ -252,14 +253,19 @@
           </div>
           <span class="panel-caret">▾</span>
         </div>
-        <!-- 좁은 화면에서 표가 페이지 전체를 옆으로 밀지 않도록 표만 따로 가로 스크롤 -->
-        <div class="table-scroll" id="historyBody">
-          <table class="history-table" id="historyTable">
-            <thead>
-              <tr><th>전략</th><th>페어</th><th>방향</th><th>손익%</th><th>손익$</th><th>청산사유</th><th>시각</th></tr>
-            </thead>
-            <tbody><tr><td colspan="7" class="empty-row">불러오는 중…</td></tr></tbody>
-          </table>
+        <!-- 좁은 화면에서 표가 페이지 전체를 옆으로 밀지 않도록 표만 따로 가로 스크롤.
+             historyBody 전체가 접이식 패널의 대상이라 페이저도 표와 함께 접힌다. -->
+        <div id="historyBody">
+          <div class="table-scroll">
+            <table class="history-table" id="historyTable">
+              <thead>
+                <tr><th>전략</th><th>페어</th><th>방향</th><th>손익%</th><th>손익$</th><th>청산사유</th><th>시각</th></tr>
+              </thead>
+              <tbody><tr><td colspan="7" class="empty-row">불러오는 중…</td></tr></tbody>
+            </table>
+          </div>
+          <!-- table-scroll 밖에 둬서 표를 옆으로 스크롤해도 페이저는 안 움직인다 -->
+          <div class="history-pager" id="historyPager"></div>
         </div>
       </section>
 

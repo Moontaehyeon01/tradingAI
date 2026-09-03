@@ -734,7 +734,11 @@ def api_summary():
 
     # 손익은 봇별로 각자 관리하는 거래에서 나오므로 합산이 맞다.
     total_starting = sum(b.get("starting_capital", 0) for b in connected)
-    total_profit_abs = sum(b.get("profit_all_abs", 0) for b in connected)
+    bot_profit_abs = sum(b.get("profit_all_abs", 0) for b in connected)
+    # 수동 매매 손익(계좌 실현손익 중 봇이 기록하지 않은 부분). 조회 실패 시 None -
+    # 그 경우 총손익은 봇 손익만으로 계산해 화면이 완전히 비진 않게 한다.
+    manual_profit_abs = fetch_manual_pnl_total()
+    total_profit_abs = bot_profit_abs + (manual_profit_abs or 0)
 
     # 봇이 관리하지 않는 포지션(직접 잡은 것)을 페어 기준으로 중복 제거
     unmanaged = {}
@@ -749,6 +753,8 @@ def api_summary():
                 "total_equity": total_equity,
                 "total_starting": total_starting,
                 "total_profit_abs": total_profit_abs,
+                "bot_profit_abs": bot_profit_abs,
+                "manual_profit_abs": manual_profit_abs,
                 "total_profit_pct": (total_profit_abs / total_starting * 100) if total_starting else 0,
                 "unmanaged_positions": list(unmanaged.values()),
                 # 청산 이력 테이블에서 봇 기록과 합쳐서 보여줄 수동 청산들.
@@ -884,6 +890,71 @@ def _closing_fill_info(symbol: str, trade_ids: list, around_ms: int) -> dict:
     return {"is_short": is_short, "avg_price": avg_price, "qty": qty}
 
 
+
+
+def _income_realized_pnl(start_ms: int) -> list[dict]:
+    """/fapi/v1/income(REALIZED_PNL) 을 start_ms 이후 전부 긁어온다 (1000건 단위 페이지네이션).
+
+    체결 방향까지 복원해야 하는 청산 이력 표시(fetch_manual_trade_history)와 달리,
+    손익 합계만 필요한 곳(fetch_manual_pnl_total)에서는 이 함수 하나면 된다 -
+    페어당 추가 조회가 없어 훨씬 가볍고, 그래서 훨씬 넓은 기간을 봐도 괜찮다.
+    """
+    out: list[dict] = []
+    st = start_ms
+    while True:
+        batch = binance_signed(
+            "/fapi/v1/income", {"incomeType": "REALIZED_PNL", "startTime": st, "limit": 1000}
+        )
+        if not batch:
+            break
+        out.extend(batch)
+        if len(batch) < 1000:
+            break
+        st = batch[-1]["time"] + 1
+        if len(out) > 20000:  # 안전장치 - 여기까지 갈 일은 실질적으로 없다
+            break
+    return out
+
+
+# 손익 합계는 체결 방향 복원이 필요 없어 표시용 이력보다 훨씬 가볍다. 그래서
+# "총 손익"에 넣을 수동 매매분은 훨씬 넓게(1년) 본다 - 화면에 보일 몇 건만
+# 걷어오면 되는 이력 표시와는 성격이 다르다.
+MANUAL_PNL_LOOKBACK_MS = 365 * 24 * 3600 * 1000  # 최근 1년
+
+_manual_pnl_cache = {"ts": 0.0, "data": None}
+MANUAL_PNL_TTL = 180
+
+
+def fetch_manual_pnl_total() -> float | None:
+    """전체 계좌 실현손익 중 봇이 기록하지 않은 부분의 합계 = 수동 매매 손익 총합.
+
+    조회 실패 시 None을 반환한다 - 0으로 조용히 채우면 "수동 매매로 손익이
+    전혀 없다"와 "지금 조회가 안 된다"가 화면에서 구분이 안 된다.
+    """
+    now = time.time()
+    if _manual_pnl_cache["data"] is not None and now - _manual_pnl_cache["ts"] < MANUAL_PNL_TTL:
+        return _manual_pnl_cache["data"]
+
+    try:
+        raw = _income_realized_pnl(int(now * 1000) - MANUAL_PNL_LOOKBACK_MS)
+    except Exception:  # noqa: BLE001
+        # 실패해도 직전 값을 유지한다(없으면 None) - 다만 ts는 갱신해야 한다.
+        # 안 그러면 캐시가 계속 만료 상태로 남아 폴링마다(4초) 재시도하게 된다.
+        _manual_pnl_cache["ts"] = now
+        return _manual_pnl_cache["data"]
+
+    bot_keys = _bot_closed_keys()
+    total = 0.0
+    for x in raw:
+        sec = x["time"] // 1000
+        if any((x["symbol"], sec + d) in bot_keys for d in (-1, 0, 1)):
+            continue  # 봇이 이미 기록한 청산 - 봇 쪽 profit_all_abs 합계에 이미 들어있다
+        total += float(x["income"])
+
+    _manual_pnl_cache.update({"ts": now, "data": total})
+    return total
+
+
 # 화면(전체 청산 이력)은 봇 기록과 합쳐 최근 15건만 보여준다. 그래서 굳이
 # 넓게 긁을 필요가 없고, 넓게 긁으면 건마다 userTrades 조회가 붙어 느려진다
 # (실측: 30일치 94건 조회에 30초). 최근 며칠 + 최대 20건으로 제한한다.
@@ -912,14 +983,7 @@ def fetch_manual_trade_history() -> list[dict]:
         return _manual_history_cache["data"]
 
     try:
-        raw = binance_signed(
-            "/fapi/v1/income",
-            {
-                "incomeType": "REALIZED_PNL",
-                "startTime": int(now * 1000) - MANUAL_HISTORY_LOOKBACK_MS,
-                "limit": 1000,
-            },
-        )
+        raw = _income_realized_pnl(int(now * 1000) - MANUAL_HISTORY_LOOKBACK_MS)
     except Exception:  # noqa: BLE001
         _manual_history_cache.update({"ts": now, "data": []})
         return []
