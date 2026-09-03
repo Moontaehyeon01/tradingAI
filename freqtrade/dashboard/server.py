@@ -570,7 +570,11 @@ def fetch_bot_summary(bot: dict) -> dict:
         balance = call_bot(bot["url"], "/api/v1/balance")
         profit = call_bot(bot["url"], "/api/v1/profit")
         open_trades = call_bot(bot["url"], "/api/v1/status")
-        recent = call_bot(bot["url"], "/api/v1/trades", {"limit": 10})
+        # limit 만 걸면 안 된다 - /api/v1/trades 는 trade_id 오름차순(오래된
+        # 것부터)이라, 청산 건수가 limit 을 넘는 순간부터 "최신"이 아니라
+        # "가장 오래된" 거래들이 잘려 들어온다. 넉넉히 받아서 아래에서
+        # close_date 기준으로 직접 재정렬한다.
+        recent = call_bot(bot["url"], "/api/v1/trades", {"limit": 500})
         daily = call_bot(bot["url"], "/api/v1/daily", {"timescale": 14})
         config = call_bot(bot["url"], "/api/v1/show_config")
 
@@ -655,8 +659,11 @@ def fetch_bot_summary(bot: dict) -> dict:
                         "exit_reason": t.get("exit_reason"),
                         "exit_reason_ko": exit_reason_ko(t.get("exit_reason")),
                     }
-                    for t in recent.get("trades", [])
-                    if not t.get("is_open")
+                    for t in sorted(
+                        (t for t in recent.get("trades", []) if not t.get("is_open")),
+                        key=lambda t: t.get("close_date") or "",
+                        reverse=True,
+                    )[:30]
                 ],
                 "daily": [
                     {
