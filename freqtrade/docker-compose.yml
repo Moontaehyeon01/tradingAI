@@ -178,6 +178,17 @@ services:
     volumes:
       # 설정은 파일 하나짜리 bind mount다. 수정 후에는 반드시 recreate 할 것
       # (sed -i 로 고치면 inode가 바뀌어 컨테이너가 옛 내용을 계속 읽는다).
+      #
+      # *** 로컬 저장소의 config_xsect_momentum_futures.json 을 그대로 scp로
+      # 덮어쓰지 말 것. *** 민감정보(jwt_secret_key, api_server 계정, webhook
+      # secret)는 커밋 안 하려고 로컬 파일엔 빈 값/REPLACE_WITH_... placeholder가
+      # 들어있다. 실제로 이걸 그대로 올렸다가 webhook secret이 placeholder로
+      # 되돌아가서 텔레그램 알림이 조용히 끊긴 적이 있다(대시보드가 403을
+      # 받고도 별다른 경고 없이 넘어가는 구조라 한동안 못 알아챘다).
+      # 설정 필드 하나만 바꿀 땐 서버에서 python -c 등으로 그 필드만 직접
+      # 고치고, 로컬 파일을 올려야 한다면 반드시 서버의 boxbreakout_v2 config
+      # (또는 이전 xsect config 백업)에서 jwt_secret_key/api_server 계정/webhook
+      # 값을 다시 이식한 뒤 recreate 할 것.
       - ./config_xsect_momentum_futures.json:/freqtrade/user_data/config.json
       - ./strategies:/freqtrade/user_data/strategies
       - ./user_data:/freqtrade/user_data

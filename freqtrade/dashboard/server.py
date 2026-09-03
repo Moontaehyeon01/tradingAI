@@ -19,7 +19,7 @@ import os
 import re
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -740,18 +740,39 @@ def api_summary():
     total_equity = max((b.get("account_total", 0) for b in connected), default=0)
 
     # 손익은 봇별로 각자 관리하는 거래에서 나오므로 합산이 맞다.
-    total_starting = sum(b.get("starting_capital", 0) for b in connected)
     bot_profit_abs = sum(b.get("profit_all_abs", 0) for b in connected)
     # 수동 매매 손익(계좌 실현손익 중 봇이 기록하지 않은 부분). 조회 실패 시 None -
     # 그 경우 총손익은 봇 손익만으로 계산해 화면이 완전히 비진 않게 한다.
-    manual_profit_abs = fetch_manual_pnl_total()
+    manual_pnl = fetch_manual_pnl()
+    manual_profit_abs = manual_pnl.get("total")
     total_profit_abs = bot_profit_abs + (manual_profit_abs or 0)
 
-    # 봇이 관리하지 않는 포지션(직접 잡은 것)을 페어 기준으로 중복 제거
+    # 원금(시작 자본)은 봇별 starting_capital 을 그냥 더하면 안 된다 - 봇들이
+    # 시차를 두고 같은 계좌를 공유하므로(예: XSectMomentum 이 시작한 시점엔
+    # 이미 BoxBreakoutV2 가 벌어들인 돈이 잔고에 섞여 있었다), 단순 합산은
+    # 같은 원금을 여러 번 세는 꼴이 된다 - 실측으로 발견됨: 합산 320 > 지금
+    # 자산 211 (원금이 현재 자산보다 큰, 있을 수 없는 숫자가 나왔었다).
+    # "현재 자산 - 지금까지 번 돈 = 원금" 으로 역산하는 게 맞다.
+    total_starting = max(total_equity - total_profit_abs, 0)
+
+    # 봇이 관리하지 않는 포지션(직접 잡은 것)을 페어 기준으로 중복 제거.
+    # 화이트리스트 밖 페어(QQQ/TQQQ 등)는 freqtrade API 자체가 몰라서 여기
+    # 안 잡힌다 - "보유 포지션" 카운트는 이것만으로는 못 만든다(아래에서 보강).
     unmanaged = {}
     for b in connected:
         for p in b.get("unmanaged_positions", []):
             unmanaged[p["pair"]] = p
+
+    # "보유 포지션" 카드는 봇이 여는 포지션뿐 아니라 계좌에 실제로 떠 있는
+    # 수동 포지션도 세야 한다. 바이낸스를 직접 봐야 화이트리스트 밖 페어도
+    # 잡힌다 - 그동안 QQQ 롱처럼 봇이 모르는 포지션이 있어도 "보유 포지션 0"
+    # 으로 잘못 표시됐다.
+    acct = fetch_account()
+    manual_position_count = (
+        sum(1 for p in acct.get("positions", []) if not p.get("managed"))
+        if acct.get("ok")
+        else 0
+    )
 
     return jsonify(
         {
@@ -762,6 +783,9 @@ def api_summary():
                 "total_profit_abs": total_profit_abs,
                 "bot_profit_abs": bot_profit_abs,
                 "manual_profit_abs": manual_profit_abs,
+                # 누적손익추이 차트에서 "수동" 시리즈로 그릴 최근 14일 일별 손익
+                "manual_daily": manual_pnl.get("daily", []),
+                "manual_position_count": manual_position_count,
                 "total_profit_pct": (total_profit_abs / total_starting * 100) if total_starting else 0,
                 "unmanaged_positions": list(unmanaged.values()),
                 # 청산 이력 테이블에서 봇 기록과 합쳐서 보여줄 수동 청산들.
@@ -903,7 +927,7 @@ def _income_realized_pnl(start_ms: int) -> list[dict]:
     """/fapi/v1/income(REALIZED_PNL) 을 start_ms 이후 전부 긁어온다 (1000건 단위 페이지네이션).
 
     체결 방향까지 복원해야 하는 청산 이력 표시(fetch_manual_trade_history)와 달리,
-    손익 합계만 필요한 곳(fetch_manual_pnl_total)에서는 이 함수 하나면 된다 -
+    손익 합계만 필요한 곳(fetch_manual_pnl)에서는 이 함수 하나면 된다 -
     페어당 추가 조회가 없어 훨씬 가볍고, 그래서 훨씬 넓은 기간을 봐도 괜찮다.
     """
     out: list[dict] = []
@@ -938,10 +962,15 @@ _manual_pnl_cache = {"ts": 0.0, "data": None}
 MANUAL_PNL_TTL = 180
 
 
-def fetch_manual_pnl_total() -> float | None:
-    """전체 계좌 실현손익 중 봇이 기록하지 않은 부분의 합계 = 수동 매매 손익 총합.
+def fetch_manual_pnl() -> dict:
+    """전체 계좌 실현손익 중 봇이 기록하지 않은 부분 = 수동 매매 손익.
 
-    조회 실패 시 None을 반환한다 - 0으로 조용히 채우면 "수동 매매로 손익이
+    총합("total")과 최근 14일 일별 시리즈("daily")를 함께 낸다 - 봇의
+    /api/v1/daily 도 timescale=14 라서, 누적손익추이 차트에 같은 창으로
+    나란히 그릴 수 있게 맞췄다. 같은 income 조회를 재사용하므로 별도로
+    부르는 것보다 API 호출이 늘지 않는다.
+
+    total 이 None이면 조회 실패다 - 0으로 조용히 채우면 "수동 매매로 손익이
     전혀 없다"와 "지금 조회가 안 된다"가 화면에서 구분이 안 된다.
     """
     now = time.time()
@@ -951,21 +980,39 @@ def fetch_manual_pnl_total() -> float | None:
     try:
         raw = _income_realized_pnl(MANUAL_PNL_START_MS)
     except Exception:  # noqa: BLE001
-        # 실패해도 직전 값을 유지한다(없으면 None) - 다만 ts는 갱신해야 한다.
+        # 실패해도 직전 값을 유지한다(없으면 빈 결과) - 다만 ts는 갱신해야 한다.
         # 안 그러면 캐시가 계속 만료 상태로 남아 폴링마다(4초) 재시도하게 된다.
         _manual_pnl_cache["ts"] = now
-        return _manual_pnl_cache["data"]
+        return _manual_pnl_cache["data"] or {"total": None, "daily": []}
 
     bot_keys = _bot_closed_keys()
-    total = 0.0
-    for x in raw:
-        sec = x["time"] // 1000
-        if any((x["symbol"], sec + d) in bot_keys for d in (-1, 0, 1)):
-            continue  # 봇이 이미 기록한 청산 - 봇 쪽 profit_all_abs 합계에 이미 들어있다
-        total += float(x["income"])
+    manual = [
+        x for x in raw
+        if not any((x["symbol"], x["time"] // 1000 + d) in bot_keys for d in (-1, 0, 1))
+    ]
+    total = sum(float(x["income"]) for x in manual)
 
-    _manual_pnl_cache.update({"ts": now, "data": total})
-    return total
+    by_day: dict = {}
+    for x in manual:
+        d = datetime.fromtimestamp(x["time"] / 1000, timezone.utc).date()
+        by_day[d] = by_day.get(d, 0.0) + float(x["income"])
+    today = datetime.now(timezone.utc).date()
+    # starting_balance 는 0으로 둔다 - 봇처럼 정해진 스테이크 풀이 없어서
+    # "그날 시작 잔고 대비 수익률" 자체가 성립하지 않는 개념이다. 프론트는
+    # starting_balance 가 0이면 그 시리즈의 수익률(%)을 억지로 계산하지 않고
+    # 그냥 0으로 둔다 - 그래프의 금액 누적선 자체엔 영향이 없다.
+    daily = [
+        {
+            "date": (today - timedelta(days=i)).isoformat(),
+            "abs_profit": by_day.get(today - timedelta(days=i), 0.0),
+            "starting_balance": 0,
+        }
+        for i in range(13, -1, -1)
+    ]
+
+    result = {"total": total, "daily": daily}
+    _manual_pnl_cache.update({"ts": now, "data": result})
+    return result
 
 
 # 화면(전체 청산 이력)은 봇 기록과 합쳐 최근 15건만 보여준다. 그래서 굳이
@@ -995,11 +1042,20 @@ def fetch_manual_trade_history() -> list[dict]:
     ):
         return _manual_history_cache["data"]
 
+    # 새로 생긴 청산을 감지해서 알림에 남기려면(아래) "이전에 뭐가 있었는지"가
+    # 있어야 한다 - 캐시를 덮어쓰기 전에 미리 떼어둔다. 첫 로딩(서버 막 시작한
+    # 직후, prev가 None)일 때는 비교 기준이 없으므로 알림을 만들지 않는다 -
+    # 안 그러면 서버 재시작마다 과거 청산들을 전부 "새 알림"으로 쏟아낸다.
+    prev = _manual_history_cache["data"]
+
     try:
         raw = _income_realized_pnl(int(now * 1000) - MANUAL_HISTORY_LOOKBACK_MS)
     except Exception:  # noqa: BLE001
-        _manual_history_cache.update({"ts": now, "data": []})
-        return []
+        # 실패해도 직전 값을 유지한다 - 없으면 빈 리스트, 있으면 그대로.
+        # data 를 [] 로 덮어쓰면 다음 성공 때 기존 항목이 전부 "새로 생긴 것"으로
+        # 보여 알림이 한꺼번에 쏟아진다.
+        _manual_history_cache["ts"] = now
+        return _manual_history_cache["data"] or []
 
     bot_keys = _bot_closed_keys()
     raw.sort(key=lambda x: (x["symbol"], x["time"]))
@@ -1055,6 +1111,33 @@ def fetch_manual_trade_history() -> list[dict]:
             }
         )
     out.sort(key=lambda x: x["close_date"], reverse=True)
+
+    # 이전에 없던 항목(=새로 감지된 수동 청산)만 "최근 알림"에 남긴다. 봇의
+    # exit_fill 이벤트와 스키마를 맞춰서 event="exit_fill" 로 기록했다 - 그래야
+    # 프론트의 알림 렌더링/청산음 로직을 그대로 탄다(수동이라고 다른 취급을 할
+    # 이유가 없다). bot_name 이 "수동"이고 exit_reason_ko 가 이미 구분해주므로
+    # 화면에서 봇 것과 헷갈리지 않는다.
+    if prev is not None:
+        prev_keys = {(t["pair"], t["close_date"]) for t in prev}
+        for t in out:
+            key = (t["pair"], t["close_date"])
+            if key in prev_keys:
+                continue
+            record_notification(
+                {
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "event": "exit_fill",
+                    "bot_name": "수동",
+                    "pair": t["pair"],
+                    "side_ko": None,  # 방향을 못 찾은 경우도 있어 side_ko 는 안 쓴다(아래 참고)
+                    "is_short": t["is_short"],
+                    "profit_ratio_pct": t["close_profit_pct"],
+                    "profit_amount": t["close_profit_abs"],
+                    "stake_currency": "USDT",
+                    "exit_reason_ko": t["exit_reason_ko"],
+                }
+            )
+
     _manual_history_cache.update({"ts": now, "data": out})
     return out
 
