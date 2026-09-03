@@ -59,6 +59,10 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
 
 BOTS = [
+    # 주의: 거래당 실효배율 = (tradable_balance_ratio / max_open_trades) x leverage.
+    # 슬롯 수를 줄이면 레버리지를 안 건드려도 거래당 위험이 올라간다.
+    # 2026-09-03 기준: (0.5 / 2) x 3 = 0.75배.
+    #
     # max_hold_h / box_max_width 는 전략 파라미터라 freqtrade API로는 안 나온다.
     # 화면에 "시간청산까지 남은 시간", "박스 조건 충족 여부"를 표시하려고 여기 적어둔다.
     # 전략 파라미터를 바꾸면 이 값도 같이 맞춰야 한다.
