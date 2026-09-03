@@ -286,6 +286,45 @@
     </footer>
 
   </div>
+
+  <!-- ===== 오른쪽 사이드 패널: 참고용 시세 차트 + 뉴스 =====
+       .shell 의 max-width 안에서, 화면이 넓을 때 비어 있던 공간을 채운다.
+       이 프로젝트가 만든 데이터가 아니라 TradingView 무료 위젯(외부 iframe/
+       스크립트 임베드)이라 로그인·봇 상태와는 무관하게 항상 그대로 보여준다.
+       좁은 화면(아래 미디어쿼리)에서는 3컬럼이 무리라 통째로 숨긴다. -->
+  <aside class="side-panel">
+    <div class="side-panel-card">
+      <div class="side-panel-title">BTC/USDT · 무기한선물</div>
+      <div class="tv-chart" id="tvChartBtc"></div>
+    </div>
+    <div class="side-panel-card">
+      <!-- 요청은 "QQQUSDT" 였는데, 바이낸스의 그 무기한선물 심볼은 TradingView
+           표기로 끝에 ".P" 를 붙여야 한다("QQQUSDT" 만으로는 존재하지 않는
+           심볼로 처리됨 - 확인 후 이 형태로 확정). -->
+      <div class="side-panel-title">QQQ/USDT · 무기한선물</div>
+      <div class="tv-chart" id="tvChartQqq"></div>
+    </div>
+    <div class="side-panel-card side-panel-news">
+      <div class="side-panel-title">코인 뉴스</div>
+      <div class="tv-news-wrap">
+        <div class="tradingview-widget-container" style="height:100%;">
+          <div class="tradingview-widget-container__widget"></div>
+          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-timeline.js" async>
+          {
+            "displayMode": "regular",
+            "feedMode": "market",
+            "market": "crypto",
+            "colorTheme": "dark",
+            "isTransparent": true,
+            "locale": "kr",
+            "width": "100%",
+            "height": "100%"
+          }
+          </script>
+        </div>
+      </div>
+    </div>
+  </aside>
 </div>
 
 <!-- 모바일 하단 네비게이션.
@@ -305,5 +344,31 @@
 <script src="app.js"></script>
 <script src="signals.js"></script>
 <script src="account.js"></script>
+
+<!-- 오른쪽 사이드 패널의 BTC/QQQ 차트. tv.js 는 한 번만 로드하고 위젯을
+     두 번 생성한다(뉴스 위젯은 별도 embed 스크립트라 이 라이브러리가 필요
+     없다 - index.html 안에서 인라인으로 이미 로드됨).
+     autosize 로 컨테이너(.tv-chart, CSS에서 고정 높이) 크기를 그대로 따라간다. -->
+<script src="https://s3.tradingview.com/tv.js"></script>
+<script>
+  if (window.TradingView) {
+    const tvCommon = {
+      autosize: true,
+      interval: "60",
+      timezone: "Asia/Seoul",
+      theme: "dark",
+      style: "1",
+      locale: "kr",
+      toolbar_bg: "#14161d",
+      hide_top_toolbar: true,
+      hide_legend: false,
+      save_image: false,
+      backgroundColor: "#14161d",
+      gridColor: "rgba(255,255,255,0.06)",
+    };
+    new TradingView.widget({ ...tvCommon, symbol: "BINANCE:BTCUSDT.P", container_id: "tvChartBtc" });
+    new TradingView.widget({ ...tvCommon, symbol: "BINANCE:QQQUSDT.P", container_id: "tvChartQqq" });
+  }
+</script>
 </body>
 </html>
