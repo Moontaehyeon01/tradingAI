@@ -17,9 +17,13 @@ import hmac
 import json
 import os
 import re
+import threading
 import time
+import xml.etree.ElementTree as ET
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -1428,6 +1432,153 @@ def backfill_notifications() -> int:
     return added
 
 
+# ============================================================
+# 코인 뉴스 - 여러 매체 RSS를 모아 중복 제거 + 한글 번역
+#
+# "빨리 올리는 곳들 위주로 싹 다 긁어와서" 요청에 맞춰, 실시간성이 좋은
+# 매체들의 RSS 피드를 모은다. 서버(AWS)에서 실제로 접근되는지, 어떤
+# 포맷인지 하나씩 실측하고 골랐다 - bitcoinmagazine.com은 403으로 막혀서
+# 뺐고, blockworks.co는 200은 오는데 <item> 자체가 없는 포맷이라 뺐다.
+NEWS_FEEDS = [
+    ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
+    ("CoinTelegraph", "https://cointelegraph.com/rss"),
+    ("Decrypt", "https://decrypt.co/feed"),
+    ("CryptoSlate", "https://cryptoslate.com/feed/"),
+    ("NewsBTC", "https://www.newsbtc.com/feed/"),
+    ("TheBlock", "https://www.theblock.co/rss.xml"),
+    ("CryptoNews", "https://cryptonews.com/news/feed/"),
+    ("U.Today", "https://u.today/rss"),
+]
+
+NEWS_MAX_ITEMS = 30  # 이 이상은 번역 비용/시간만 늘고 화면에서 의미가 없다
+NEWS_REFRESH_SEC = 600  # 10분. 번역까지 하는 무거운 작업이라 자주 돌 필요 없다
+
+_news_cache = {"ts": 0.0, "data": []}
+_news_lock = threading.Lock()
+
+
+def _strip_html(text: str) -> str:
+    """RSS description에 섞여 오는 HTML 태그 제거."""
+    return re.sub(r"<[^>]+>", " ", text or "").strip()
+
+
+def _norm_title(t: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", t.lower())
+
+
+def _parse_rss(source: str, xml_text: str) -> list[dict]:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+    out = []
+    for item in root.iter("item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        summary = _strip_html(item.findtext("description") or "")[:220]
+        pub_raw = item.findtext("pubDate") or ""
+        pub = None
+        try:
+            pub = parsedate_to_datetime(pub_raw)
+            if pub.tzinfo is None:
+                pub = pub.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            pass
+        if not title or not link:
+            continue
+        out.append(
+            {"source": source, "title": title, "link": link, "summary": summary, "published": pub}
+        )
+    return out
+
+
+def _dedupe_news(items: list[dict]) -> list[dict]:
+    """제목 유사도로 중복 제거 - 여러 매체가 같은 사건을 다른 제목으로 쓰는 경우가 흔하다.
+    호출 전에 최신순 정렬을 해두면, 같은 사건이 겹칠 때 더 최근(=보통 더 자세한) 쪽이 남는다.
+    """
+    kept = []
+    for it in items:
+        norm = _norm_title(it["title"])
+        if any(SequenceMatcher(None, norm, _norm_title(k["title"])).ratio() > 0.8 for k in kept):
+            continue
+        kept.append(it)
+    return kept
+
+
+def _translate_to_ko(text: str) -> str:
+    """MyMemory 무료 번역(키 불필요). 실패하면 원문을 그대로 돌려준다 -
+    번역이 안 됐다고 기사 자체를 감출 이유는 없다.
+
+    구글 번역 비공식 엔드포인트도 시도해봤으나 이 서버 IP에서 자동화 요청으로
+    차단당했다("Sorry... automated queries") - 그래서 MyMemory를 쓴다.
+    """
+    if not text:
+        return text
+    try:
+        resp = requests.get(
+            "https://api.mymemory.translated.net/get",
+            params={"q": text[:490], "langpair": "en|ko"},
+            timeout=6,
+        )
+        resp.raise_for_status()
+        translated = resp.json().get("responseData", {}).get("translatedText")
+        return translated or text
+    except Exception:  # noqa: BLE001
+        return text
+
+
+def _refresh_news_once() -> None:
+    all_items = []
+    for source, url in NEWS_FEEDS:
+        try:
+            resp = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            all_items += _parse_rss(source, resp.text)
+        except Exception:  # noqa: BLE001
+            continue  # 매체 하나가 죽어도 나머지로 계속한다
+
+    all_items.sort(
+        key=lambda x: x["published"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True
+    )
+    all_items = _dedupe_news(all_items)[:NEWS_MAX_ITEMS]
+
+    out = []
+    for it in all_items:
+        out.append(
+            {
+                "source": it["source"],
+                "title": _translate_to_ko(it["title"]),
+                "summary": _translate_to_ko(it["summary"]),
+                "link": it["link"],
+                "published": it["published"].isoformat() if it["published"] else None,
+            }
+        )
+        # 번역 API(익명, 무료)를 너무 몰아치지 않으려고 항목 사이에 살짝 텀을 둔다
+        time.sleep(0.15)
+
+    with _news_lock:
+        _news_cache.update({"ts": time.time(), "data": out})
+
+
+def _news_refresh_loop() -> None:
+    """백그라운드 스레드. RSS 조회 + 번역(최대 30건 x 2 = 최대 60회 API 호출)은
+    수십 초가 걸릴 수 있어서, 요청 스레드에서 동기로 하면 그동안 다른 API가
+    다 막힌다. 그래서 별도 스레드에서 미리 채워두고, /api/news 는 캐시만
+    즉시 돌려준다."""
+    while True:
+        try:
+            _refresh_news_once()
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(NEWS_REFRESH_SEC)
+
+
+@app.get("/api/news")
+def api_news():
+    with _news_lock:
+        return jsonify({"news": list(_news_cache["data"])})
+
+
 if __name__ == "__main__":
     # 로컬 개발 시엔 기본값(127.0.0.1)만 노출됨. 서버에 배포해서 외부 접속을
     # 받아야 할 때만 DASHBOARD_HOST=0.0.0.0 을 명시적으로 지정해서 실행할 것
@@ -1439,4 +1590,11 @@ if __name__ == "__main__":
     except Exception as exc:  # noqa: BLE001
         # 봇 컨테이너가 아직 안 떠 있는 등으로 실패해도 대시보드 자체는 떠야 한다
         print(f"[startup] 알림 백필 실패(무시하고 계속): {exc}")
-    app.run(host=host, port=5000, debug=False)
+
+    # 뉴스는 백그라운드 스레드가 계속 갱신한다. _news_refresh_loop 자체가
+    # 시작하자마자 한 번 채우고 도니, 스레드를 하나만 띄운다(이걸 놓치고
+    # _refresh_news_once() 를 따로 한 번 더 부르면 두 스레드가 동시에 같은
+    # RSS/번역 API를 이중으로 호출하게 된다).
+    threading.Thread(target=_news_refresh_loop, daemon=True).start()
+
+    app.run(host=host, port=5000, debug=False, threaded=True)

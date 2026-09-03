@@ -45,19 +45,30 @@ body {
    스크롤 안 되고 그냥 잘려서 안 보이는 버그가 있었음) */
 .shell {
   width: 100%;
-  /* 오른쪽 사이드 패널(340px)이 들어갈 자리를 감안해 예전(1400px)보다
-     넓혔다. 화면이 그만큼 안 넓으면 미디어쿼리가 사이드 패널을 통째로
-     숨기므로, 좁은 화면에서는 이 값이 그냥 의미 없는 상한일 뿐이다. */
-  max-width: 1780px;
+  /* 왼쪽 뉴스 패널(300px) + 오른쪽 차트 패널(340px)이 같이 들어갈 자리를
+     감안해 예전(1400px)보다 넓혔다. 화면이 그만큼 안 넓으면 미디어쿼리가
+     두 패널을 통째로 숨기므로, 좁은 화면에서는 이 값이 의미 없는 상한이다. */
+  max-width: 2020px;
   height: calc(100vh - 44px);
   display: flex;
+  flex-direction: column; /* 상단 nav + 본문(가로 3단) 세로로 쌓기 */
   background: var(--panel);
   border-radius: var(--radius-lg);
   box-shadow: 0 30px 60px -20px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255,255,255,0.03);
   overflow: hidden;
 }
 
-/* ===== 오른쪽 사이드 패널 (BTC/QQQ 차트 + 코인 뉴스) ===== */
+/* 상단 nav 아래, 뉴스/메인/차트가 가로로 나란히 앉는 영역.
+   예전엔 .shell 자체가 이 가로 flex 였는데, 상단 nav 가 생기면서
+   "가로로 나열되는 부분"만 따로 감쌌다. */
+.shell-body {
+  flex: 1;
+  min-height: 0; /* flex 자식이 내용물 크기만큼 늘어나 스크롤이 깨지는 것 방지 */
+  display: flex;
+  overflow: hidden;
+}
+
+/* ===== 오른쪽 사이드 패널 (BTC/QQQ 차트) ===== */
 .side-panel {
   width: 340px;
   flex-shrink: 0;
@@ -88,39 +99,91 @@ body {
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
-/* 뉴스 카드는 차트 두 개가 쓰고 남은 공간을 전부 채운다 */
-.side-panel-news {
-  flex: 1;
-  min-height: 260px;
-}
-.tv-news-wrap { flex: 1; min-height: 0; }
 
-/* 사이드 패널까지 넉넉히 들어갈 폭이 안 되면 통째로 숨긴다 - 어중간하게
-   찌그러뜨리는 것보다, 원래 레이아웃(사이드바+메인)을 온전히 지키는 쪽을
-   택한다. 1500px 은 사이드바(210)+본문이 그럭저럭 편하게 쓰던 폭(약950)+
-   사이드 패널(340) 기준으로 잡은 값이다. */
+/* ===== 왼쪽 뉴스 패널 (사이드바가 상단으로 옮겨가며 비게 된 자리) =====
+   news.js 가 /api/news 를 폴링해서 채운다 - 여러 매체 RSS를 서버가 모아
+   제목 유사도로 중복 제거하고, 한글로 번역해서 내려준다. */
+.news-panel {
+  width: 300px;
+  flex-shrink: 0;
+  background: var(--panel-alt);
+  border-right: 1px solid var(--border);
+  padding: 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+.news-panel-title { font-size: 13px; color: var(--text); }
+.news-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.news-item {
+  display: block;
+  padding: 10px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  border: 1px solid var(--border);
+  text-decoration: none;
+  color: inherit;
+}
+.news-item:hover { background: var(--card-hover); border-color: var(--blue); }
+.news-item-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.4;
+  margin-bottom: 4px;
+}
+.news-item-summary {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.45;
+  margin-bottom: 6px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.news-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.news-item-source { color: var(--blue); font-weight: 600; }
+
+/* 사이드 패널까지 넉넉히 들어갈 폭이 안 되면 둘 다 통째로 숨긴다 -
+   어중간하게 찌그러뜨리는 것보다, 뉴스/차트 없는 중앙 레이아웃을 온전히
+   지키는 쪽을 택한다. */
 @media (max-width: 1500px) {
-  .side-panel { display: none; }
+  .side-panel,
+  .news-panel {
+    display: none;
+  }
 }
 
 /* ===== Sidebar ===== */
 
-.sidebar {
-  width: 210px;
+/* ===== 상단 네비게이션 (예전 세로 사이드바) ===== */
+.topnav {
   flex-shrink: 0;
   background: var(--panel-alt);
-  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   display: flex;
-  flex-direction: column;
-  padding: 22px 16px;
-  overflow-y: auto;
+  align-items: center;
+  gap: 22px;
+  padding: 14px 24px;
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 0 8px 26px;
+  flex-shrink: 0;
 }
 .brand-mark {
   color: var(--blue);
@@ -132,22 +195,28 @@ body {
   letter-spacing: -0.2px;
 }
 
+/* 세로 목록 -> 가로 메뉴로. flex:1 로 브랜드와 모드필 사이의 남는 공간을
+   전부 차지해서, 모드필이 자연스럽게 오른쪽 끝에 붙는다. */
 .nav {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
   gap: 3px;
+  flex: 1;
+  overflow-x: auto;
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 8px 13px;
   border-radius: var(--radius-sm);
   color: var(--text-dim);
   font-size: 13px;
   font-weight: 500;
   text-decoration: none;
+  white-space: nowrap;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
@@ -158,9 +227,8 @@ body {
 }
 .nav-icon { font-size: 13px; width: 16px; text-align: center; }
 
-.sidebar-foot { margin-top: auto; }
-
 .mode-pill {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -736,7 +804,11 @@ table.pos-table { width: 100%; border-collapse: collapse; }
      카드 자체를 압축하고 칩을 절대배치로 빼서 해결
    ============================================================ */
 @media (max-width: 980px) {
-  .sidebar { display: none; }
+  /* 상단 nav 의 메뉴는 숨긴다 - 같은 역할을 .mobile-nav(하단바)가 대신한다.
+     브랜드 로고와 모드필(LIVE/DRY-RUN)은 남겨서 화면 맨 위에서도 상태를
+     바로 알 수 있게 둔다. */
+  .nav { display: none; }
+  .topnav { padding: 12px 16px; gap: 12px; }
   .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .panel-grid { grid-template-columns: minmax(0, 1fr); }
   .bot-grid { grid-template-columns: minmax(0, 1fr); }
