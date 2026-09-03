@@ -208,6 +208,12 @@ function renderStats(summary) {
   // 총손익 = 봇 손익 + 수동 매매 손익. 아래 밝혀서 뭐가 얼마나 기여했는지 보여준다.
   // manual_profit_abs 가 null 이면 조회 실패(계좌 접근 오류 등)라 값이 아니라
   // 그 사실 자체를 알려야 한다 - fmtUsd(null) 이 "–" 를 주는 걸 그대로 쓴다.
+  //
+  // 수동 손익 집계 기간(8월~)을 같이 보여준다 - 예전엔 롤링 1년을 썼는데, 그
+  // 범위에 이 프로젝트와 무관한 훨씬 오래된 손실이 섞여 들어가 "요즘은 번
+  // 것밖에 없는데 왜 마이너스냐"는 착시를 만들었다(server.py MANUAL_PNL_START
+  // 참고). 기간을 못 박아 고쳤으니, 화면에도 그 기간을 명시해야 다음에 또
+  // 이 혼란이 반복되지 않는다.
   const pnlNote = document.getElementById("statPnlBreakdown");
   if (pnlNote) {
     const botTxt = `봇 $${fmtUsd(summary.combined.bot_profit_abs)}`;
@@ -215,7 +221,7 @@ function renderStats(summary) {
       summary.combined.manual_profit_abs === null
         ? "수동 조회 실패"
         : `수동 $${fmtUsd(summary.combined.manual_profit_abs)}`;
-    pnlNote.textContent = `${botTxt} · ${manualTxt}`;
+    pnlNote.textContent = `${botTxt} · ${manualTxt} (8월~ 집계)`;
   }
 
   const openCount = connectedBots.reduce((sum, b) => sum + b.open_trades.length, 0);
