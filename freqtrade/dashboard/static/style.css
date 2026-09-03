@@ -600,6 +600,10 @@ table.pos-table { width: 100%; border-collapse: collapse; }
 .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .table-scroll .history-table { min-width: 620px; }
 
+/* 진입 조건 현황에 봇이 둘 이상 동시에 표시될 때(예: 여러 봇이 같이 가동
+   중일 때) 표끼리 붙어 보이지 않도록 간격을 둔다. */
+#signalGroups .table-scroll + .table-scroll { margin-top: 18px; }
+
 /* 모바일 하단 네비게이션 — 기본(데스크톱)은 숨김 */
 .mobile-nav { display: none; }
 

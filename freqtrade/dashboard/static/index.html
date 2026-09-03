@@ -194,15 +194,15 @@
             <div class="panel-sub" id="signalNote">불러오는 중…</div>
           </div>
         </div>
-        <div class="table-scroll">
-          <table class="history-table" id="signalTable">
-            <thead>
-              <tr><th>페어</th><th>박스권</th><th>박스폭</th><th>현재가</th><th>돌파까지</th><th>상태</th></tr>
-            </thead>
-            <tbody id="signalBody">
-              <tr><td colspan="6" class="empty-row">지표를 불러오는 중…</td></tr>
-            </tbody>
-          </table>
+        <!-- 봇마다 진입 조건의 성격이 달라(박스 돌파 vs 순위 기반 롱숏) 표 구조 자체가
+             다르다. 정지된 봇은 signals.js가 서버 응답에서 아예 안 보내주므로
+             화면에서 자동으로 빠진다 - 이 컨테이너는 signals.js가 통째로 채운다. -->
+        <div id="signalGroups">
+          <div class="table-scroll">
+            <table class="history-table">
+              <tbody><tr><td class="empty-row">지표를 불러오는 중…</td></tr></tbody>
+            </table>
+          </div>
         </div>
       </section>
 

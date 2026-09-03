@@ -63,17 +63,20 @@ BOTS = [
     # 슬롯 수를 줄이면 레버리지를 안 건드려도 거래당 위험이 올라간다.
     # 2026-09-03 기준: (0.5 / 2) x 3 = 0.75배.
     #
-    # max_hold_h / box_max_width 는 전략 파라미터라 freqtrade API로는 안 나온다.
-    # 화면에 "시간청산까지 남은 시간", "박스 조건 충족 여부"를 표시하려고 여기 적어둔다.
-    # 전략 파라미터를 바꾸면 이 값도 같이 맞춰야 한다.
+    # max_hold_h / box_max_width / lookback / top_k 는 전략 파라미터라 freqtrade
+    # API로는 안 나온다. 화면 표시용으로 여기 적어둔다. 전략 파라미터를 바꾸면
+    # 이 값도 같이 맞춰야 한다.
+    #
+    # signal_kind: 진입 조건 현황 패널이 봇마다 다른 방식으로 그려야 해서 붙인
+    # 태그다. "box"는 박스권 돌파(박스 범위/폭/돌파까지 거리), "xsect_momentum"은
+    # 순위 기반(전체 페어 수익률 순위/롱·숏 후보) - 컬럼 구성 자체가 다르다.
     {"id": "boxbreakoutv2", "name": "BoxBreakoutV2 (박스돌파 V2)",
      "url": "http://127.0.0.1:8086", "leverage": 3,
-     "max_hold_h": 120, "box_max_width": 0.04},
-    # 횡단면 모멘텀은 박스가 없다. box_max_width 를 안 주면 진입 조건 패널이
-    # 이 봇의 페어를 건너뛴다 (fetch_signals 가 box_width 컬럼을 요구하므로).
+     "max_hold_h": 120, "box_max_width": 0.04, "signal_kind": "box"},
     {"id": "xsectmomentum", "name": "XSectMomentum (횡단면 모멘텀)",
      "url": "http://127.0.0.1:8087", "leverage": 2,
-     "max_hold_h": 72},
+     "max_hold_h": 72, "signal_kind": "xsect_momentum",
+     "timeframe": "1d", "lookback": 14, "top_k": 3},
     # v1은 2026-08-28 격자탐색 결과 v2 조합(박스12봉/폭4%/익절35%/48h)이 학습·홀드아웃
     # 양쪽에서 더 나아서 중단함. 되살리려면 아래 줄과 docker compose 서비스를 함께.
     # {"id": "boxbreakout", "name": "BoxBreakoutStrategy (박스돌파)", "url": "http://127.0.0.1:8085", "leverage": 5},
@@ -273,8 +276,110 @@ _signal_cache = {"ts": 0.0, "data": None}
 SIGNAL_TTL = 60
 
 
+def _box_signals(bot: dict) -> list[dict]:
+    """박스 돌파 전략의 진입 조건: 페어별 박스 범위/폭/돌파까지 남은 거리."""
+    try:
+        wl = call_bot(bot["url"], "/api/v1/whitelist").get("whitelist", [])
+    except Exception:  # noqa: BLE001
+        return []
+    limit = bot.get("box_max_width", 0.04)
+    out = []
+    for pair in wl:
+        try:
+            d = call_bot(bot["url"], "/api/v1/pair_candles",
+                         {"pair": pair, "timeframe": "1h", "limit": 3})
+        except Exception:  # noqa: BLE001
+            continue
+        cols = {c: i for i, c in enumerate(d.get("columns", []))}
+        rows = d.get("data") or []
+        if not rows or "box_width" not in cols:
+            continue
+        r = rows[-1]
+
+        def val(name):
+            i = cols.get(name)
+            return r[i] if i is not None else None
+
+        hi, lo, width, close = (val("box_high"), val("box_low"),
+                                val("box_width"), val("close"))
+        if hi is None or lo is None or width is None or not close:
+            continue
+        out.append({
+            "bot": bot["id"], "pair": pair,
+            "box_high": hi, "box_low": lo, "box_width": width,
+            "close": close, "limit": limit,
+            "is_box": width <= limit,
+            # 돌파까지 남은 거리(%). 음수면 이미 그 방향으로 벗어난 상태.
+            "to_high_pct": (hi - close) / close * 100,
+            "to_low_pct": (close - lo) / close * 100,
+            "enter_long": bool(val("enter_long")),
+            "enter_short": bool(val("enter_short")),
+        })
+    return out
+
+
+def _xsect_signals(bot: dict) -> list[dict]:
+    """횡단면 모멘텀의 진입 조건: 박스가 아니라 순위다.
+
+    실제 롱/숏 판정은 봇 프로세스 내부 상태(XSectMomentumStrategy.bot_loop_start
+    가 채우는 self._longs/_shorts)에만 있고 freqtrade API로는 노출되지 않는다.
+    그래서 같은 규칙(끝에서 2번째 = 가장 최근에 완성된 봉 기준 lookback일 수익률)을
+    여기서 그대로 재현해 순위를 매긴다. 상위 top_k = 롱 후보, 하위 top_k = 숏 후보.
+    """
+    try:
+        wl = call_bot(bot["url"], "/api/v1/whitelist").get("whitelist", [])
+    except Exception:  # noqa: BLE001
+        return []
+    lb = bot.get("lookback", 14)
+    top_k = bot.get("top_k", 3)
+    tf = bot.get("timeframe", "1d")
+
+    scores = []
+    for pair in wl:
+        try:
+            d = call_bot(bot["url"], "/api/v1/pair_candles",
+                         {"pair": pair, "timeframe": tf, "limit": lb + 3})
+        except Exception:  # noqa: BLE001
+            continue
+        cols = {c: i for i, c in enumerate(d.get("columns", []))}
+        rows = d.get("data") or []
+        ci = cols.get("close")
+        if ci is None or len(rows) < lb + 2:
+            continue
+        closes = [row[ci] for row in rows]
+        now_c, past_c = closes[-2], closes[-2 - lb]
+        if not now_c or not past_c:
+            continue
+        scores.append({"bot": bot["id"], "pair": pair, "close": now_c,
+                       "ret": now_c / past_c - 1.0})
+
+    # 상위/하위 top_k 를 가르려면 양쪽에 최소 top_k개씩은 있어야 한다
+    # (XSectMomentumStrategy.bot_loop_start 와 같은 조건).
+    if len(scores) < 2 * top_k:
+        return []
+
+    scores.sort(key=lambda x: x["ret"])
+    n = len(scores)
+    for i, s in enumerate(scores):
+        rank = i + 1  # 1 = 수익률 최하위
+        if rank <= top_k:
+            status = "short"
+        elif rank > n - top_k:
+            status = "long"
+        else:
+            status = "wait"
+        s.update({"rank": rank, "total": n, "status": status})
+    scores.sort(key=lambda x: x["ret"], reverse=True)
+    return scores
+
+
 def fetch_signals():
-    """감시 중인 페어별 박스 상태. '지금 왜 진입을 안 하는지'를 화면에서 답하기 위한 것."""
+    """지금 가동 중인 봇의 진입 조건. '지금 왜 진입을 안 하는지'를 화면에서 답하기 위한 것.
+
+    정지된 봇은 여기서 걸러진다 - 안 도는 봇의 신호를 보여줘 봐야 혼란만 준다.
+    이렇게 하면 대시보드 전원 버튼으로 봇을 켜고 끌 때마다 이 패널이 무엇을
+    기준으로 도는지 코드를 따로 손볼 필요가 없다.
+    """
     now = time.time()
     if _signal_cache["data"] is not None and now - _signal_cache["ts"] < SIGNAL_TTL:
         return _signal_cache["data"]
@@ -282,41 +387,18 @@ def fetch_signals():
     out = []
     for bot in BOTS:
         try:
-            wl = call_bot(bot["url"], "/api/v1/whitelist").get("whitelist", [])
+            cfg = call_bot(bot["url"], "/api/v1/show_config")
         except Exception:  # noqa: BLE001
             continue
-        limit = bot.get("box_max_width", 0.04)
-        for pair in wl:
-            try:
-                d = call_bot(bot["url"], "/api/v1/pair_candles",
-                             {"pair": pair, "timeframe": "1h", "limit": 3})
-            except Exception:  # noqa: BLE001
-                continue
-            cols = {c: i for i, c in enumerate(d.get("columns", []))}
-            rows = d.get("data") or []
-            if not rows or "box_width" not in cols:
-                continue
-            r = rows[-1]
+        if cfg.get("state") != "running":
+            continue
 
-            def val(name):
-                i = cols.get(name)
-                return r[i] if i is not None else None
-
-            hi, lo, width, close = (val("box_high"), val("box_low"),
-                                    val("box_width"), val("close"))
-            if hi is None or lo is None or width is None or not close:
-                continue
-            out.append({
-                "bot": bot["id"], "pair": pair,
-                "box_high": hi, "box_low": lo, "box_width": width,
-                "close": close, "limit": limit,
-                "is_box": width <= limit,
-                # 돌파까지 남은 거리(%). 음수면 이미 그 방향으로 벗어난 상태.
-                "to_high_pct": (hi - close) / close * 100,
-                "to_low_pct": (close - lo) / close * 100,
-                "enter_long": bool(val("enter_long")),
-                "enter_short": bool(val("enter_short")),
-            })
+        kind = bot.get("signal_kind", "box")
+        items = _xsect_signals(bot) if kind == "xsect_momentum" else _box_signals(bot)
+        for item in items:
+            item["kind"] = kind
+            item.setdefault("bot_name", bot["name"])
+        out.extend(items)
     _signal_cache.update({"ts": now, "data": out})
     return out
 
