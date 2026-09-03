@@ -12,8 +12,8 @@
 
 <div class="shell">
 
-  <!-- ===== Sidebar ===== -->
-  <aside class="sidebar">
+  <!-- ===== 상단 네비게이션 (예전엔 왼쪽 세로 사이드바였다) ===== -->
+  <header class="topnav">
     <div class="brand">
       <div class="brand-mark">◆</div>
       <span class="brand-name">TradeOps</span>
@@ -40,10 +40,24 @@
       </a>
     </nav>
 
-    <div class="sidebar-foot">
-      <div class="mode-pill" id="modePill">
-        <span class="mode-dot" id="modeDot"></span> <span id="modeText">확인 중</span>
-      </div>
+    <div class="mode-pill" id="modePill">
+      <span class="mode-dot" id="modeDot"></span> <span id="modeText">확인 중</span>
+    </div>
+  </header>
+
+  <!-- 사이드바가 있던 왼쪽 자리는 이제 코인 뉴스가 채운다 (아래 news-panel).
+       상단 nav + (뉴스패널 / 메인 / 우측 차트패널) 이렇게 세로 2단 구조가 됐다. -->
+  <div class="shell-body">
+
+  <!-- ===== 코인 뉴스 (왼쪽) =====
+       여러 매체(코인데스크·코인텔레그래프·디크립트 등)의 RSS를 서버가 모아
+       제목 유사도로 중복만 걸러서 준다. 제목/요약은 서버가 미리 한글로
+       번역해서 내려주고(뉴스 자체가 자주 안 바뀌니 캐시), 클릭하면 원문
+       기사로 새 탭이 열린다. -->
+  <aside class="news-panel">
+    <div class="side-panel-title news-panel-title">코인 뉴스</div>
+    <div class="news-list" id="newsList">
+      <div class="empty-row">뉴스를 불러오는 중…</div>
     </div>
   </aside>
 
@@ -287,11 +301,12 @@
 
   </div>
 
-  <!-- ===== 오른쪽 사이드 패널: 참고용 시세 차트 + 뉴스 =====
+  <!-- ===== 오른쪽 사이드 패널: 참고용 시세 차트 =====
        .shell 의 max-width 안에서, 화면이 넓을 때 비어 있던 공간을 채운다.
        이 프로젝트가 만든 데이터가 아니라 TradingView 무료 위젯(외부 iframe/
        스크립트 임베드)이라 로그인·봇 상태와는 무관하게 항상 그대로 보여준다.
-       좁은 화면(아래 미디어쿼리)에서는 3컬럼이 무리라 통째로 숨긴다. -->
+       좁은 화면(아래 미디어쿼리)에서는 컬럼이 무리라 통째로 숨긴다.
+       뉴스는 왼쪽 news-panel로 옮겨서 여기엔 차트 둘만 남는다. -->
   <aside class="side-panel">
     <div class="side-panel-card">
       <div class="side-panel-title">BTC/USDT · 무기한선물</div>
@@ -304,28 +319,10 @@
       <div class="side-panel-title">QQQ/USDT · 무기한선물</div>
       <div class="tv-chart" id="tvChartQqq"></div>
     </div>
-    <div class="side-panel-card side-panel-news">
-      <div class="side-panel-title">코인 뉴스</div>
-      <div class="tv-news-wrap">
-        <div class="tradingview-widget-container" style="height:100%;">
-          <div class="tradingview-widget-container__widget"></div>
-          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-timeline.js" async>
-          {
-            "displayMode": "regular",
-            "feedMode": "market",
-            "market": "crypto",
-            "colorTheme": "dark",
-            "isTransparent": true,
-            "locale": "kr",
-            "width": "100%",
-            "height": "100%"
-          }
-          </script>
-        </div>
-      </div>
-    </div>
   </aside>
-</div>
+
+  </div><!-- /.shell-body -->
+</div><!-- /.shell -->
 
 <!-- 모바일 하단 네비게이션.
      좁은 화면에서는 사이드바가 숨겨지는데 그 안에 화면 이동 메뉴가 들어 있어서
@@ -344,11 +341,11 @@
 <script src="app.js"></script>
 <script src="signals.js"></script>
 <script src="account.js"></script>
+<script src="news.js"></script>
 
 <!-- 오른쪽 사이드 패널의 BTC/QQQ 차트. tv.js 는 한 번만 로드하고 위젯을
-     두 번 생성한다(뉴스 위젯은 별도 embed 스크립트라 이 라이브러리가 필요
-     없다 - index.html 안에서 인라인으로 이미 로드됨).
-     autosize 로 컨테이너(.tv-chart, CSS에서 고정 높이) 크기를 그대로 따라간다. -->
+     두 번 생성한다. autosize 로 컨테이너(.tv-chart, CSS에서 고정 높이)
+     크기를 그대로 따라간다. -->
 <script src="https://s3.tradingview.com/tv.js"></script>
 <script>
   if (window.TradingView) {
