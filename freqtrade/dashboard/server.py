@@ -594,6 +594,19 @@ def fetch_bot_summary(bot: dict) -> dict:
         )
         balance_bot_owned = own_free + own_positions_margin
 
+        # 봇이 정지 상태면 화면에는 잔고를 0으로 보여준다.
+        #
+        # 이건 tradable_balance_ratio 를 낮추는 것과는 다른 방식으로 접근한
+        # 것이다 - 한 번 ratio 를 0.01 로 낮춰서 "화면에 잔고가 적게 보이게"
+        # 했다가, freqtrade가 손익%/MDD 를 계산할 때도 같은 ratio 를 분모로
+        # 쓰는 바람에 실제 손익(-8.99 USDT)이 -409% 라는 말도 안 되는 수치로
+        # 나온 적이 있다(그 ratio 로 줄어든 시작자본을 분모로 나눴기 때문).
+        # ratio 는 freqtrade 내부 계산에까지 영향을 주므로, "화면에만" 보이는
+        # 값을 바꾸고 싶으면 이렇게 표시 레이어에서 오버라이드해야
+        # 손익률/MDD 계산은 건드리지 않는다.
+        if config.get("state") == "stopped":
+            balance_bot_owned = 0.0
+
         # 계좌 전체 실제 잔고(봇 소유 여부와 무관). "총자산" 표시에 쓴다.
         # balance_bot_owned는 신규 봇이라 거래 이력이 없으면 0에 가깝게 나오는데,
         # 그걸 총자산으로 보여주면 실제 계좌에 돈이 있는데도 0으로 보인다.
