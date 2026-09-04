@@ -1456,6 +1456,15 @@ NEWS_REFRESH_SEC = 600  # 10분. 번역까지 하는 무거운 작업이라 자�
 _news_cache = {"ts": 0.0, "data": []}
 _news_lock = threading.Lock()
 
+# 번역 결과 캐시(원문 -> 번역문). 캐시가 없으면 대부분 재활용되는 기사를
+# 10분마다 30건 x 2필드씩 매번 다시 번역 요청하게 되어, MyMemory 무료
+# 일일 한도(익명 기준 하루 몇백 건 수준)를 몇 시간 만에 다 써버렸다
+# (실제로 겪음: 오후에 이미 "YOU USED ALL AVAILABLE FREE TRANSLATIONS
+# FOR TODAY" 429를 받기 시작함). 같은 원문은 캐시에서 즉시 돌려주고,
+# 실제로 API를 부르는 건 새로 나온 기사뿐이라 호출량이 크게 준다.
+_translation_cache: dict[str, str] = {}
+_TRANSLATION_CACHE_MAX = 1000
+
 
 def _strip_html(text: str) -> str:
     """RSS description에 섞여 오는 HTML 태그 제거."""
@@ -1511,9 +1520,15 @@ def _translate_to_ko(text: str) -> str:
 
     구글 번역 비공식 엔드포인트도 시도해봤으나 이 서버 IP에서 자동화 요청으로
     차단당했다("Sorry... automated queries") - 그래서 MyMemory를 쓴다.
+
+    같은 원문은 _translation_cache 에서 바로 돌려주고, API는 처음 보는
+    텍스트에만 부른다(위 _translation_cache 정의부의 주석 참고 - 캐시
+    없이 매 새로고침마다 전부 다시 부르다 무료 일일 한도를 소진한 적 있다).
     """
     if not text:
         return text
+    if text in _translation_cache:
+        return _translation_cache[text]
     try:
         resp = requests.get(
             "https://api.mymemory.translated.net/get",
@@ -1521,10 +1536,21 @@ def _translate_to_ko(text: str) -> str:
             timeout=6,
         )
         resp.raise_for_status()
-        translated = resp.json().get("responseData", {}).get("translatedText")
-        return translated or text
+        data = resp.json()
+        if data.get("responseStatus") not in (200, "200"):
+            raise ValueError(data.get("responseDetails") or "translate quota/error")
+        translated = data.get("responseData", {}).get("translatedText")
+        result = translated or text
     except Exception:  # noqa: BLE001
+        # 실패(한도 초과 등)는 캐시에 남기지 않는다 - 원문을 그대로 캐시해버리면
+        # 한도가 풀린 뒤에도 다음 새로고침마다 재시도하지 않고 계속 원문만 돈다.
+        time.sleep(0.15)
         return text
+    time.sleep(0.15)  # 번역 API를 너무 몰아치지 않으려고 실제 호출 후에만 살짝 텀을 둔다
+    if len(_translation_cache) >= _TRANSLATION_CACHE_MAX:
+        _translation_cache.pop(next(iter(_translation_cache)))
+    _translation_cache[text] = result
+    return result
 
 
 def _refresh_news_once() -> None:
