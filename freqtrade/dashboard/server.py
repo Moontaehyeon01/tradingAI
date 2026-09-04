@@ -80,7 +80,10 @@ BOTS = [
     {"id": "xsectmomentum", "name": "XSectMomentum (횡단면 모멘텀)",
      "url": "http://127.0.0.1:8087", "leverage": 2,
      "max_hold_h": 72, "signal_kind": "xsect_momentum",
-     "timeframe": "1d", "lookback": 14, "top_k": 3},
+     "timeframe": "1d", "lookback": 14, "top_k": 3,
+     # 전략의 take_profit_price_move 와 반드시 같은 값으로 맞출 것 - 여기는
+     # 순수 표시용이라 전략을 고쳐도 이 값은 자동으로 안 따라온다.
+     "take_profit_price_move": 0.30},
     # v1은 2026-08-28 격자탐색 결과 v2 조합(박스12봉/폭4%/익절35%/48h)이 학습·홀드아웃
     # 양쪽에서 더 나아서 중단함. 되살리려면 아래 줄과 docker compose 서비스를 함께.
     # {"id": "boxbreakout", "name": "BoxBreakoutStrategy (박스돌파)", "url": "http://127.0.0.1:8085", "leverage": 5},
@@ -246,11 +249,13 @@ def exit_targets(trade: dict, bot: dict, config: dict) -> dict:
 
     익절가: minimal_roi 는 '레버리지 적용 후 계좌 수익률' 단위라서 가격으로 바꾸려면
             레버리지로 나눠야 한다. ROI 35% + 레버리지 3배 -> 가격 11.7% 이동.
-            일부 전략(예: XSectMomentumStrategy)은 가격 목표 없이 시간 경과로만
-            청산하도록 설계돼 있는데, freqtrade가 minimal_roi 를 필수로 요구해서
-            "100.0(=10000%)"처럼 사실상 절대 안 닿는 값을 채워 ROI 청산을 꺼둔다.
-            이걸 그대로 가격으로 환산하면 진입가에서 수천 % 떨어진, 보이지도
-            도달하지도 않는 익절가가 나온다 - 이 경우는 "익절가 없음"으로 둔다.
+            XSectMomentumStrategy처럼 minimal_roi 로 익절을 안 하고 custom_exit
+            안에서 순수 가격 기준으로 직접 비교하는 전략도 있다 - 이런 전략은
+            freqtrade API에 진짜 익절 조건이 노출되지 않으므로(minimal_roi 는
+            "100.0(=10000%)"처럼 절대 안 닿는 값으로 꺼둔 상태) BOTS 설정의
+            take_profit_price_move 를 대신 쓴다. 이것도 없고 minimal_roi 도
+            100%를 넘으면 "익절가 없음"으로 둔다(정상 ROI 목표가 계좌 기준
+            100%를 넘는 경우는 없으므로, 그 이상은 사실상 꺼둔 것으로 본다).
     시간청산: 전략의 custom_exit(max_hold_candles)이 담당하는데 freqtrade API로는
             노출되지 않아 BOTS 설정의 max_hold_h 를 쓴다.
     """
@@ -260,9 +265,13 @@ def exit_targets(trade: dict, bot: dict, config: dict) -> dict:
     roi = config.get("minimal_roi") or {}
     roi0 = roi.get("0")
     open_rate = trade.get("open_rate")
+    tp_move = bot.get("take_profit_price_move")
+    if tp_move and open_rate:
+        out["take_profit_abs"] = (open_rate * (1 - tp_move) if trade.get("is_short")
+                                  else open_rate * (1 + tp_move))
     # roi0 >= 1.0(=100%)은 실제 익절 목표가 아니라 "절대 안 닿게" 걸어둔
     # 안전장치용 값으로 본다 - 정상적인 ROI 목표가 계좌 기준 100%를 넘는 경우는 없다.
-    if roi0 and roi0 < 1.0 and open_rate and lev:
+    elif roi0 and roi0 < 1.0 and open_rate and lev:
         move = float(roi0) / float(lev)          # 계좌 기준 -> 가격 기준
         out["take_profit_abs"] = (open_rate * (1 - move) if trade.get("is_short")
                                   else open_rate * (1 + move))
