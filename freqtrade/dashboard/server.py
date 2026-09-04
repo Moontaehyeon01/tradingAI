@@ -568,6 +568,31 @@ def api_account():
     return jsonify(fetch_account())
 
 
+# freqtrade가 자체 계산하는 profit_all_percent는 내부적으로
+# "현재 가용 잔고 - 지금까지 번 돈"으로 시작자본을 역산한다(freqtrade
+# Wallets.get_starting_balance). BoxBreakoutV2와 XSectMomentum이 같은
+# 바이낸스 계좌를 공유하다 보니, 이 "현재 가용 잔고"에는 상대 봇이 방금
+# 포지션을 열고 닫으며 쓰는 증거금까지 섞여 들어간다 - 그래서 이 봇은
+# 아무 거래도 안 했는데 상대 봇이 매매할 때마다 이 봇의 총손익 %가 같이
+# 흔들리는 현상이 생겼다(우리 쪽 total_profit_pct 도 total_equity를 그대로
+# 가져다 쓰던 예전 방식이라 같은 문제를 겪었다). 시작자본을 매 요청마다
+# 실시간으로 역산하는 대신 한 번 계산해서 한동안 고정해두면, 진짜 잔고
+# 변화(입출금, 봇 간 잔고 재배분)가 있을 때만 서서히 갱신되고 상대 봇의
+# 매매 노이즈로는 흔들리지 않는다.
+_starting_capital_cache: dict[str, dict] = {}
+STARTING_CAPITAL_TTL = 4 * 3600  # 4시간
+
+
+def _stable_starting_capital(key: str, current_value: float, profit_abs: float) -> float:
+    now = time.time()
+    entry = _starting_capital_cache.get(key)
+    if entry is not None and now - entry["ts"] < STARTING_CAPITAL_TTL:
+        return entry["value"]
+    value = max(current_value - profit_abs, 0)
+    _starting_capital_cache[key] = {"ts": now, "value": value}
+    return value
+
+
 def fetch_bot_summary(bot: dict, days: int = 14) -> dict:
     out = {"id": bot["id"], "name": bot["name"], "leverage": bot.get("leverage", 1), "connected": False}
     try:
@@ -598,6 +623,13 @@ def fetch_bot_summary(bot: dict, days: int = 14) -> dict:
             if c.get("is_position") and c.get("is_bot_managed")
         )
         balance_bot_owned = own_free + own_positions_margin
+        # 아래 _stable_starting_capital 계산용 - 정지 상태여도 실제 보유분을
+        # 써야 한다(0으로 override된 값을 쓰면 시작자본이 음수/0으로 깨진다).
+        bot_owned_for_capital = balance_bot_owned
+        profit_all_abs = profit.get("profit_all_coin", 0)
+        bot_starting_capital = _stable_starting_capital(
+            bot["id"], bot_owned_for_capital, profit_all_abs
+        )
 
         # 봇이 정지 상태면 화면에는 잔고를 0으로 보여준다.
         #
@@ -643,8 +675,13 @@ def fetch_bot_summary(bot: dict, days: int = 14) -> dict:
                 "starting_capital": balance.get("starting_capital", 0),
                 "profit_closed_abs": profit.get("profit_closed_coin", 0),
                 "profit_closed_pct": profit.get("profit_closed_percent", 0),
-                "profit_all_abs": profit.get("profit_all_coin", 0),
-                "profit_all_pct": profit.get("profit_all_percent", 0),
+                "profit_all_abs": profit_all_abs,
+                # freqtrade가 내려주는 profit_all_percent 대신 위 _stable_starting_capital
+                # 로 직접 계산한다 - 계좌를 공유하는 다른 봇의 매매만으로도 흔들리는
+                # 문제(위 주석 참고)를 피하기 위함.
+                "profit_all_pct": (
+                    profit_all_abs / bot_starting_capital * 100 if bot_starting_capital else 0
+                ),
                 "trade_count": profit.get("trade_count", 0),
                 "winrate": profit.get("winrate", 0),
                 "max_drawdown": profit.get("max_drawdown", 0),
@@ -777,7 +814,14 @@ def api_summary():
     # 같은 원금을 여러 번 세는 꼴이 된다 - 실측으로 발견됨: 합산 320 > 지금
     # 자산 211 (원금이 현재 자산보다 큰, 있을 수 없는 숫자가 나왔었다).
     # "현재 자산 - 지금까지 번 돈 = 원금" 으로 역산하는 게 맞다.
-    total_starting = max(total_equity - total_profit_abs, 0)
+    #
+    # 이걸 매 요청마다 실시간으로 다시 역산하면, total_equity(바이낸스 잔고
+    # 조회)와 total_profit_abs(freqtrade가 캐시해둔 시세 기준 평가)가 서로
+    # 완전히 같은 순간의 값이 아니라서 몇 초 간격으로도 미세하게 어긋나고,
+    # 원금 자체가 크지 않다 보니 그 몇 달러 차이가 총손익률 %에서는 몇 %p
+    # 단위로 증폭되어 "자산은 그대로인데 %만 계속 바뀌는" 것처럼 보였다.
+    # _stable_starting_capital 로 같은 값을 한동안 고정해서 이 노이즈를 없앤다.
+    total_starting = _stable_starting_capital("total", total_equity, total_profit_abs)
 
     # 봇이 관리하지 않는 포지션(직접 잡은 것)을 페어 기준으로 중복 제거.
     # 화이트리스트 밖 페어(QQQ/TQQQ 등)는 freqtrade API 자체가 몰라서 여기
