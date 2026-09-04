@@ -99,13 +99,13 @@
         "format": "json",
         "entry_fill": {
             "event": "entry_fill",
-            "bot_name": "박스돌파V2",
+            "bot_name": "횡단면모멘텀",
             "pair": "{pair}",
             "direction": "{direction}"
         },
         "exit_fill": {
             "event": "exit_fill",
-            "bot_name": "박스돌파V2",
+            "bot_name": "횡단면모멘텀",
             "pair": "{pair}",
             "direction": "{direction}",
             "profit_ratio": "{profit_ratio}",
@@ -115,17 +115,17 @@
         },
         "status": {
             "event": "status",
-            "bot_name": "박스돌파V2",
+            "bot_name": "횡단면모멘텀",
             "status": "{status}"
         },
         "warning": {
             "event": "warning",
-            "bot_name": "박스돌파V2",
+            "bot_name": "횡단면모멘텀",
             "status": "{status}"
         },
         "startup": {
             "event": "startup",
-            "bot_name": "박스돌파V2",
+            "bot_name": "횡단면모멘텀",
             "status": "{status}"
         }
     },
@@ -140,7 +140,7 @@
         "username": "freqtrader",
         "password": ""
     },
-    "bot_name": "binance-boxbreakout-v2-bot",
+    "bot_name": "binance-xsect-momentum-bot",
     "initial_state": "stopped",
     "force_entry_enable": false,
     "internals": {

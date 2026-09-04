@@ -36,25 +36,22 @@ body {
   display: flex;
   align-items: stretch;
   justify-content: center;
-  padding: 22px;
 }
 
 /* ===== Shell ===== */
 /* 뷰포트 높이에 고정하고, 내부의 .content만 스크롤되도록 함
    (예전엔 min-height + overflow:hidden 조합이라 뷰포트보다 긴 내용이
-   스크롤 안 되고 그냥 잘려서 안 보이는 버그가 있었음) */
+   스크롤 안 되고 그냥 잘려서 안 보이는 버그가 있었음).
+   예전엔 body에 22px 패딩을 주고 .shell을 카드처럼 둥글게 띄웠는데,
+   그 패딩 + max-width로 인한 좌우 레터박싱이 화면 전체를 못 채우고
+   상하좌우에 검은 여백(페이지 배경색)이 남는 원인이었다. 화면을 꽉 채우도록
+   패딩/최대폭/모서리 둥글림을 전부 없앴다. */
 .shell {
   width: 100%;
-  /* 왼쪽 뉴스 패널(300px) + 오른쪽 차트 패널(560px, 차트가 잘 보이도록 확장)이
-     같이 들어갈 자리를 감안해 넓혔다. 화면이 그만큼 안 넓으면 미디어쿼리가
-     두 패널을 통째로 숨기므로, 좁은 화면에서는 이 값이 의미 없는 상한이다. */
-  max-width: 2240px;
-  height: calc(100vh - 44px);
+  height: 100vh;
   display: flex;
   flex-direction: column; /* 상단 nav + 본문(가로 3단) 세로로 쌓기 */
   background: var(--panel);
-  border-radius: var(--radius-lg);
-  box-shadow: 0 30px 60px -20px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255,255,255,0.03);
   overflow: hidden;
 }
 
