@@ -24,6 +24,35 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ===== 스크롤바 =====
+   브라우저 기본 스크롤바(굵은 회색 막대)가 이 어두운 카드형 UI랑 안 어울려서,
+   얇고 테두리 색에 녹아드는 커스텀 스크롤바로 통일한다. 평소엔 거의 안 보이다가
+   호버 시에만 살짝 밝아지는 쪽이 카드 위주 레이아웃에서 덜 거슬린다. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 20px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-faint);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 html, body {
   background: var(--page-bg);
   color: var(--text);
