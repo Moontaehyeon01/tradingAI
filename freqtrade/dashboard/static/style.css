@@ -45,10 +45,10 @@ body {
    스크롤 안 되고 그냥 잘려서 안 보이는 버그가 있었음) */
 .shell {
   width: 100%;
-  /* 왼쪽 뉴스 패널(300px) + 오른쪽 차트 패널(340px)이 같이 들어갈 자리를
-     감안해 예전(1400px)보다 넓혔다. 화면이 그만큼 안 넓으면 미디어쿼리가
+  /* 왼쪽 뉴스 패널(300px) + 오른쪽 차트 패널(560px, 차트가 잘 보이도록 확장)이
+     같이 들어갈 자리를 감안해 넓혔다. 화면이 그만큼 안 넓으면 미디어쿼리가
      두 패널을 통째로 숨기므로, 좁은 화면에서는 이 값이 의미 없는 상한이다. */
-  max-width: 2020px;
+  max-width: 2240px;
   height: calc(100vh - 44px);
   display: flex;
   flex-direction: column; /* 상단 nav + 본문(가로 3단) 세로로 쌓기 */
@@ -70,7 +70,7 @@ body {
 
 /* ===== 오른쪽 사이드 패널 (BTC/QQQ 차트) ===== */
 .side-panel {
-  width: 340px;
+  width: 560px;
   flex-shrink: 0;
   border-left: 1px solid var(--border);
   padding: 18px;
@@ -95,7 +95,7 @@ body {
   color: var(--text-dim);
 }
 .tv-chart {
-  height: 220px;
+  height: 320px;
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
@@ -159,7 +159,7 @@ body {
 /* 사이드 패널까지 넉넉히 들어갈 폭이 안 되면 둘 다 통째로 숨긴다 -
    어중간하게 찌그러뜨리는 것보다, 뉴스/차트 없는 중앙 레이아웃을 온전히
    지키는 쪽을 택한다. */
-@media (max-width: 1500px) {
+@media (max-width: 1700px) {
   .side-panel,
   .news-panel {
     display: none;
