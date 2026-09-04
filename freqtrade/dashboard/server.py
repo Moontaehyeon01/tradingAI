@@ -17,6 +17,7 @@ import hmac
 import json
 import os
 import re
+import statistics
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -81,9 +82,12 @@ BOTS = [
      "url": "http://127.0.0.1:8087", "leverage": 2,
      "max_hold_h": 72, "signal_kind": "xsect_momentum",
      "timeframe": "1d", "lookback": 14, "top_k": 3,
-     # 전략의 take_profit_price_move 와 반드시 같은 값으로 맞출 것 - 여기는
-     # 순수 표시용이라 전략을 고쳐도 이 값은 자동으로 안 따라온다.
-     "take_profit_price_move": 0.30},
+     # 익절폭이 고정값이 아니라 종목별 변동성 스케일링이라(전략의
+     # take_profit_vol_mult/window/min/max 참고) 여기 상수 하나로는 표시를
+     # 못 한다 - exit_targets() 가 이 플래그를 보고 _xsect_vol_scaled_tp() 로
+     # 종목별로 직접 계산한다. 전략의 저 네 파라미터를 바꾸면 아래 함수의
+     # 같은 이름 상수도 같이 맞출 것.
+     "take_profit_vol_scaled": True},
     # v1은 2026-08-28 격자탐색 결과 v2 조합(박스12봉/폭4%/익절35%/48h)이 학습·홀드아웃
     # 양쪽에서 더 나아서 중단함. 되살리려면 아래 줄과 docker compose 서비스를 함께.
     # {"id": "boxbreakout", "name": "BoxBreakoutStrategy (박스돌파)", "url": "http://127.0.0.1:8085", "leverage": 5},
@@ -243,6 +247,53 @@ def call_bot(base_url: str, path: str, params: dict | None = None):
     return resp.json()
 
 
+# XSectMomentum의 익절폭을 대시보드에서 재현하기 위한 캐시. 전략의
+# take_profit_vol_mult(3.0)/window(180)/min(0.05)/max(1.00)와 반드시 같은
+# 값을 써야 한다 - 전략을 고치면 여기도 같이 고칠 것.
+_XSECT_TP_VOL_MULT = 3.0
+_XSECT_TP_VOL_WINDOW = 180
+_XSECT_TP_MIN_PCT = 0.05
+_XSECT_TP_MAX_PCT = 1.00
+_xsect_tp_cache: dict = {}
+_XSECT_TP_TTL = 6 * 3600  # 변동성은 하루 사이 크게 안 바뀌니 자주 다시 구할 필요 없다
+
+
+def _xsect_vol_scaled_tp(pair: str) -> float | None:
+    """전략의 bot_loop_start 와 동일한 계산을 대시보드에서 독립적으로 재현한다
+    (전략 내부 상태는 REST API로 안 나와서 직접 다시 구하는 수밖에 없다).
+    바이낸스 일봉을 받아 최근 3일 수익률 표준편차 x 배수를 낸다."""
+    symbol = pair.split(":")[0].replace("/", "")
+    now = time.time()
+    cached = _xsect_tp_cache.get(symbol)
+    if cached is not None and now - cached["ts"] < _XSECT_TP_TTL:
+        return cached["value"]
+    try:
+        resp = requests.get(
+            "https://fapi.binance.com/fapi/v1/klines",
+            params={"symbol": symbol, "interval": "1d", "limit": _XSECT_TP_VOL_WINDOW + 5},
+            timeout=8,
+        )
+        resp.raise_for_status()
+        closes = [float(k[4]) for k in resp.json()]
+    except Exception:  # noqa: BLE001
+        return cached["value"] if cached else None
+
+    # 진행 중인 마지막 봉 제외, 3일 수익률의 표준편차
+    closes = closes[:-1]
+    if len(closes) < 63:
+        value = None
+    else:
+        ret3 = [(closes[i] / closes[i - 3] - 1.0) for i in range(3, len(closes))]
+        vol = statistics.stdev(ret3) if len(ret3) >= 60 else None
+        value = (
+            max(_XSECT_TP_MIN_PCT, min(_XSECT_TP_VOL_MULT * vol, _XSECT_TP_MAX_PCT))
+            if vol and vol > 0
+            else None
+        )
+    _xsect_tp_cache[symbol] = {"ts": now, "value": value}
+    return value
+
+
 def exit_targets(trade: dict, bot: dict, config: dict) -> dict:
     """
     포지션이 '어디서 / 언제' 끝나는지를 계산한다.
@@ -250,12 +301,14 @@ def exit_targets(trade: dict, bot: dict, config: dict) -> dict:
     익절가: minimal_roi 는 '레버리지 적용 후 계좌 수익률' 단위라서 가격으로 바꾸려면
             레버리지로 나눠야 한다. ROI 35% + 레버리지 3배 -> 가격 11.7% 이동.
             XSectMomentumStrategy처럼 minimal_roi 로 익절을 안 하고 custom_exit
-            안에서 순수 가격 기준으로 직접 비교하는 전략도 있다 - 이런 전략은
-            freqtrade API에 진짜 익절 조건이 노출되지 않으므로(minimal_roi 는
-            "100.0(=10000%)"처럼 절대 안 닿는 값으로 꺼둔 상태) BOTS 설정의
-            take_profit_price_move 를 대신 쓴다. 이것도 없고 minimal_roi 도
-            100%를 넘으면 "익절가 없음"으로 둔다(정상 ROI 목표가 계좌 기준
-            100%를 넘는 경우는 없으므로, 그 이상은 사실상 꺼둔 것으로 본다).
+            안에서 종목별 변동성 스케일링(순수 가격 기준)으로 직접 비교하는
+            전략도 있다 - 이런 전략은 freqtrade API에 진짜 익절 조건이
+            노출되지 않으므로(minimal_roi 는 "100.0(=10000%)"처럼 절대 안
+            닿는 값으로 꺼둔 상태) BOTS 설정의 take_profit_vol_scaled 플래그가
+            있으면 _xsect_vol_scaled_tp() 로 종목별로 직접 계산한다. 이것도
+            없고 minimal_roi 도 100%를 넘으면 "익절가 없음"으로 둔다(정상
+            ROI 목표가 계좌 기준 100%를 넘는 경우는 없으므로, 그 이상은
+            사실상 꺼둔 것으로 본다).
     시간청산: 전략의 custom_exit(max_hold_candles)이 담당하는데 freqtrade API로는
             노출되지 않아 BOTS 설정의 max_hold_h 를 쓴다.
     """
@@ -265,7 +318,9 @@ def exit_targets(trade: dict, bot: dict, config: dict) -> dict:
     roi = config.get("minimal_roi") or {}
     roi0 = roi.get("0")
     open_rate = trade.get("open_rate")
-    tp_move = bot.get("take_profit_price_move")
+    tp_move = None
+    if bot.get("take_profit_vol_scaled") and trade.get("pair"):
+        tp_move = _xsect_vol_scaled_tp(trade["pair"])
     if tp_move and open_rate:
         out["take_profit_abs"] = (open_rate * (1 - tp_move) if trade.get("is_short")
                                   else open_rate * (1 + tp_move))

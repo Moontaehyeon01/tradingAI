@@ -44,12 +44,23 @@ XSectMomentumStrategy — 횡단면 모멘텀 (시장중립 롱숏)
     (5구간 x 2가지 구간나누기)에서도 시간청산만 쓰는 것보다 일관되게 낫거나
     비슷했다. (참고: hold_days 자체를 10일로 늘리면 익절 없이도 더 좋다는
     결과도 있었으나, 이번엔 "3일은 유지"라는 요청에 따라 익절만 추가함.)
+
+  2026-09-04 고정 30% -> 종목별 변동성 스케일링으로 교체: 고정 30%는 BTC(3일
+    변동성 표준편차 ~5%)한테는 사실상 절대 안 닿는 값이라 익절이 없는 것과
+    같았고(실측 발동률 0.8%, ETH는 0.0%), DOGE(~18%)한테는 오히려 자주 걸려서
+    (6.6%) 큰 흐름을 끊었다. 종목마다 "3일 수익률 표준편차 x 3배"를 그 종목의
+    익절폭으로 쓰도록 바꿨다(5~100% 사이로 clip). 평균 익절폭은 고정 30%와
+    비슷한 ~29%로 유지되지만, BTC 발동률 0.8%->4.6%, ETH 0.0%->1.5%로
+    올라가면서 전체 성과도 더 좋아졌다(연 +48.4% -> +55.5%, MDD -65%대 ->
+    -62%대, t값 2.4 -> 2.6). 걷는검증에서도 두 구간나누기 방식 모두 평균
+    수익률이 고정 30% 대비 거의 2배로 나왔다.
     자세한 스캔 결과는 대시보드/커밋 기록 참고.
 
 설계
   - 매일(1d 봉) 감시 페어 전체의 lookback일 수익률을 계산해 순위를 매긴다
   - 상위 top_k -> 롱, 하위 top_k -> 숏
-  - 진입가 대비 take_profit_price_move 만큼 가격이 유리하게 움직이면 즉시 청산
+  - 진입가 대비, 그 종목의 변동성에 맞춘 익절폭만큼 가격이 유리하게
+    움직이면 즉시 청산 (아래 take_profit_vol_mult 주석 참고)
   - 그게 아니면 hold_days 경과 시 청산 (순위에서 벗어나도 청산)
   - 손절은 안전망만 (개별 손절이 아니라 포트폴리오 분산으로 위험을 관리하는 전략)
 """
@@ -79,20 +90,24 @@ class XSectMomentumStrategy(IStrategy):
     exit_profit_only = False
 
     process_only_new_candles = True
-    startup_candle_count = 120
+    # 익절폭 계산에 최근 take_profit_vol_window(180)일치 수익률이 필요해서
+    # 순위 계산에만 필요했던 120에서 늘렸다.
+    startup_candle_count = 200
 
     # 파라미터. 위 주석대로 '고원 중앙'을 쓰고 튜닝하지 않는다.
     lookback = IntParameter(7, 90, default=14, space="buy")
     top_k = IntParameter(1, 5, default=3, space="buy")
     hold_days = IntParameter(1, 14, default=3, space="sell")
 
-    # 진입가 대비 이만큼(레버리지 반영 전 순수 가격 기준) 유리하게 움직이면
-    # hold_days를 안 기다리고 바로 청산한다. 위 2026-09-04 재검증 주석 참고 -
-    # 2~15%처럼 좁게 잡으면 오히려 손해(큰 흐름을 너무 일찍 끊음), 25~35%가
-    # 고원이라 30%로 잡았다. minimal_roi가 아니라 여기서 직접 순수 가격으로
-    # 비교하는 이유는 minimal_roi는 레버리지에 따라 값이 달라져서 leverage
-    # 설정이 바뀌면 실제 가격 목표가 같이 흔들리기 때문이다.
-    take_profit_price_move = 0.30
+    # 익절폭 = 그 종목의 최근 take_profit_vol_window일 "3일 수익률" 표준편차
+    # x take_profit_vol_mult, [take_profit_min_pct, take_profit_max_pct] 사이로
+    # clip. 레버리지 반영 전 순수 가격 기준(minimal_roi를 안 쓰는 이유는 이전과
+    # 동일 - leverage 설정이 바뀌어도 가격 목표가 안 흔들리게 하기 위함).
+    # 종목마다 다른 고정폭을 쓰는 이유는 위 2026-09-04 주석 참고.
+    take_profit_vol_mult = 3.0
+    take_profit_vol_window = 180
+    take_profit_min_pct = 0.05
+    take_profit_max_pct = 1.00
 
     @property
     def can_short(self) -> bool:
@@ -101,10 +116,11 @@ class XSectMomentumStrategy(IStrategy):
 
     def __init__(self, config: dict) -> None:
         super().__init__(config)
-        # bot_loop_start 에서 채우고 populate_entry_trend 에서 읽는다
+        # bot_loop_start 에서 채우고 populate_entry_trend / custom_exit 에서 읽는다
         self._longs: set = set()
         self._shorts: set = set()
         self._ranked_at = None
+        self._tp_by_pair: dict = {}
 
     def leverage(self, pair, current_time, current_rate, proposed_leverage,
                  max_leverage, entry_tag, side, **kwargs) -> float:
@@ -118,6 +134,7 @@ class XSectMomentumStrategy(IStrategy):
         lb = self.lookback.value
         k = self.top_k.value
         scores = {}
+        tp_by_pair = {}
 
         for pair in self.dp.current_whitelist():
             df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
@@ -126,9 +143,23 @@ class XSectMomentumStrategy(IStrategy):
             # 마지막 행은 아직 진행 중인 봉일 수 있으므로 완성된 봉만 쓴다.
             closes = df["close"].to_numpy()
             now, past = closes[-2], closes[-2 - lb]
-            if not np.isfinite(now) or not np.isfinite(past) or past <= 0:
-                continue
-            scores[pair] = now / past - 1.0
+            if np.isfinite(now) and np.isfinite(past) and past > 0:
+                scores[pair] = now / past - 1.0
+
+            # 익절폭: 이 종목의 최근 3일 수익률 표준편차 x 배수. 랭킹 계산과
+            # 별개로 - 오늘 순위에 안 들어도 이미 열려있는 포지션의 익절폭은
+            # 계속 최신으로 유지해야 하므로 감시 페어 전체에 대해 계산한다.
+            ret3 = df["close"].pct_change(3)
+            # 진행 중인 마지막 봉은 제외하고, 최근 vol_window개만 본다.
+            window = ret3.iloc[-(self.take_profit_vol_window + 2):-1].dropna()
+            if len(window) >= 60:
+                vol = float(window.std())
+                if np.isfinite(vol) and vol > 0:
+                    tp = self.take_profit_vol_mult * vol
+                    tp_by_pair[pair] = float(
+                        np.clip(tp, self.take_profit_min_pct, self.take_profit_max_pct)
+                    )
+        self._tp_by_pair = tp_by_pair
 
         # 상위/하위를 뽑으려면 양쪽에 최소 k개씩은 있어야 한다
         if len(scores) < 2 * k:
@@ -167,14 +198,19 @@ class XSectMomentumStrategy(IStrategy):
     def custom_exit(self, pair: str, trade: Trade, current_time: datetime,
                     current_rate: float, current_profit: float, **kwargs) -> Optional[str]:
         """익절 목표를 먼저 보고, 없으면 보유기간이 지날 때 순위와 무관하게
-        청산한다(검증한 리밸런싱 규칙). 익절은 순수 가격 기준(레버리지 미반영) -
-        위 take_profit_price_move 주석 참고."""
-        if trade.is_short:
-            price_move = (trade.open_rate - current_rate) / trade.open_rate
-        else:
-            price_move = (current_rate - trade.open_rate) / trade.open_rate
-        if price_move >= self.take_profit_price_move:
-            return "take_profit"
+        청산한다(검증한 리밸런싱 규칙). 익절폭은 종목별 변동성 스케일링(순수
+        가격 기준, 레버리지 미반영) - 위 take_profit_vol_mult 주석 참고.
+        해당 종목의 변동성을 아직 못 구했으면(상장 직후 등) 익절 없이
+        hold_days 청산만 적용한다 - 진입 자체는 lookback만 있으면 되지만
+        변동성은 훨씬 긴 히스토리(take_profit_vol_window)가 필요해서다."""
+        tp_move = self._tp_by_pair.get(pair)
+        if tp_move is not None:
+            if trade.is_short:
+                price_move = (trade.open_rate - current_rate) / trade.open_rate
+            else:
+                price_move = (current_rate - trade.open_rate) / trade.open_rate
+            if price_move >= tp_move:
+                return "take_profit"
 
         if (current_time - trade.open_date_utc) >= timedelta(days=self.hold_days.value):
             return "rebalance"
