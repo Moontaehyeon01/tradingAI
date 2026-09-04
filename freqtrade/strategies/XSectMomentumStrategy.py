@@ -25,10 +25,32 @@ XSectMomentumStrategy — 횡단면 모멘텀 (시장중립 롱숏)
   MDD 62.9%. 시장중립이라고 안전한 것이 아니다.
   상장폐지된 페어를 복원하지 못해 생존편향이 부분적으로만 해소됐다.
 
+  2026-09-04 재검증 (바이낸스 선물 19개 페어 일봉 직접 수집, 위와 동일 규칙 재현):
+    수수료 0%로 돌리면 위 수치가 거의 그대로 재현됨(연 수익률/MDD/BTC상관/구간
+    승률/순위상관 전부 근접) - 전략 로직 자체는 위 검증과 일치한다는 뜻.
+    다만 포지션 6개(롱3+숏3)가 각자 실제 체결 수수료를 무는 것으로 정확히
+    계산하면(같은 계좌 안에서도 서로 다른 코인끼리는 상계가 안 됨) 그림이
+    많이 나빠진다 - 0.10%/side 기준 연 +28%로 급락, 0.20%/side에서는 적자.
+    최근 2년만 떼어 보면(검증구간) 파라미터 격자 대부분이 마이너스.
+    -> 위에 적힌 "고원 평균 +54.3%"는 수수료가 사실상 반영 안 된 수치였을
+    가능성이 높다. 실제 라이브 성과는 이 주석보다 훨씬 박할 수 있다.
+
+  2026-09-04 익절가 추가 근거: 3일 청산(hold_days=3) 그대로 두고 진입가
+    대비 가격이 ±30% 움직이면(레버리지 반영 전 순수 가격 기준) 3일을 안
+    기다리고 바로 청산하도록 테스트한 결과, 수수료 반영 후에도 연 수익률이
+    뚜렷하게 개선됐다(+19.7% -> +48.4%, MDD -84%대 -> -65%대, t값 1.6 -> 2.4).
+    좁은 익절(2~15%)은 오히려 손해 - 큰 흐름을 너무 일찍 끊고 짧은 거래마다
+    수수료만 문다. 25~35% 구간이 고원을 이루고 있어 30%로 잡았다. 걷는검증
+    (5구간 x 2가지 구간나누기)에서도 시간청산만 쓰는 것보다 일관되게 낫거나
+    비슷했다. (참고: hold_days 자체를 10일로 늘리면 익절 없이도 더 좋다는
+    결과도 있었으나, 이번엔 "3일은 유지"라는 요청에 따라 익절만 추가함.)
+    자세한 스캔 결과는 대시보드/커밋 기록 참고.
+
 설계
   - 매일(1d 봉) 감시 페어 전체의 lookback일 수익률을 계산해 순위를 매긴다
   - 상위 top_k -> 롱, 하위 top_k -> 숏
-  - hold_days 경과하면 청산 (순위에서 벗어나도 청산)
+  - 진입가 대비 take_profit_price_move 만큼 가격이 유리하게 움직이면 즉시 청산
+  - 그게 아니면 hold_days 경과 시 청산 (순위에서 벗어나도 청산)
   - 손절은 안전망만 (개별 손절이 아니라 포트폴리오 분산으로 위험을 관리하는 전략)
 """
 from datetime import datetime, timedelta
@@ -63,6 +85,14 @@ class XSectMomentumStrategy(IStrategy):
     lookback = IntParameter(7, 90, default=14, space="buy")
     top_k = IntParameter(1, 5, default=3, space="buy")
     hold_days = IntParameter(1, 14, default=3, space="sell")
+
+    # 진입가 대비 이만큼(레버리지 반영 전 순수 가격 기준) 유리하게 움직이면
+    # hold_days를 안 기다리고 바로 청산한다. 위 2026-09-04 재검증 주석 참고 -
+    # 2~15%처럼 좁게 잡으면 오히려 손해(큰 흐름을 너무 일찍 끊음), 25~35%가
+    # 고원이라 30%로 잡았다. minimal_roi가 아니라 여기서 직접 순수 가격으로
+    # 비교하는 이유는 minimal_roi는 레버리지에 따라 값이 달라져서 leverage
+    # 설정이 바뀌면 실제 가격 목표가 같이 흔들리기 때문이다.
+    take_profit_price_move = 0.30
 
     @property
     def can_short(self) -> bool:
@@ -136,7 +166,16 @@ class XSectMomentumStrategy(IStrategy):
 
     def custom_exit(self, pair: str, trade: Trade, current_time: datetime,
                     current_rate: float, current_profit: float, **kwargs) -> Optional[str]:
-        """보유기간이 지나면 순위와 무관하게 청산 (검증한 리밸런싱 규칙)."""
+        """익절 목표를 먼저 보고, 없으면 보유기간이 지날 때 순위와 무관하게
+        청산한다(검증한 리밸런싱 규칙). 익절은 순수 가격 기준(레버리지 미반영) -
+        위 take_profit_price_move 주석 참고."""
+        if trade.is_short:
+            price_move = (trade.open_rate - current_rate) / trade.open_rate
+        else:
+            price_move = (current_rate - trade.open_rate) / trade.open_rate
+        if price_move >= self.take_profit_price_move:
+            return "take_profit"
+
         if (current_time - trade.open_date_utc) >= timedelta(days=self.hold_days.value):
             return "rebalance"
         return None
