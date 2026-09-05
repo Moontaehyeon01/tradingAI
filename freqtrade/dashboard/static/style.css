@@ -422,6 +422,11 @@ body {
   align-items: flex-start;
   gap: 14px;
   position: relative;
+  /* 그리드 아이템의 기본 min-width는 auto라서, 안에 white-space:nowrap인
+     .stat-note(미관리 포지션 목록처럼 길어질 수 있는 문구)가 있으면 줄임표
+     대신 그리드 트랙 자체가 그 내용만큼 넓어져서 화면 전체가 오른쪽으로
+     밀렸다. 0으로 낮춰야 내부 ellipsis 처리가 실제로 트랙 폭을 넘지 않는다. */
+  min-width: 0;
 }
 
 .stat-icon {
