@@ -10,6 +10,9 @@ const COIN_COLORS = {
 let equityChart = null;
 let sideDonut = null;
 let lastSummary = null;
+// 봇 두 개를 좌우로 나눠 보여주면 표가 좁아져서 탭으로 하나씩 전체 폭으로
+// 보여준다. 기본값은 지금 실제로 굴리는 XSectMomentum.
+let selectedBotId = "xsectmomentum";
 let lastSeenAlertTime = null; // 새로 도착한 알림만 구분해서 소리 재생하기 위한 기준점
 let audioCtx = null;
 // 누적손익추이 그래프 기간. 서버가 14/30/60 만 허용하므로(api_summary 참고)
@@ -80,6 +83,13 @@ function fmtPct(n, digits = 2) {
   if (Number.isNaN(n)) return "–";
   const sign = n > 0 ? "+" : "";
   return `${sign}${n.toFixed(digits)}%`;
+}
+
+// freqtrade 선물 페어는 "BTC/USDT:USDT"처럼 온다(정산통화 USDT + 결제통화
+// USDT가 겹쳐 보임). 어차피 이 대시보드는 전부 USDT-M이라 결제통화 표시가
+// 의미 없으니 기초자산 심볼만 남긴다.
+function fmtPair(pair) {
+  return pair ? pair.split("/")[0] : pair;
 }
 
 function pnlClass(n) {
@@ -490,7 +500,7 @@ function renderOpenTrades(trades, filter, botId) {
       const remCls = rem !== null && rem !== undefined && rem < 6 ? "warn" : "";
       return `
         <tr>
-          <td class="pair-cell">${t.pair}</td>
+          <td class="pair-cell">${fmtPair(t.pair)}</td>
           <td><span class="side-pill ${sideClass}">${sideLabel}</span></td>
           <td>${t.leverage}x</td>
           <td>${fmtNum(t.open_rate)}</td>
@@ -699,7 +709,7 @@ function renderHistory(summary) {
       return `
         <tr>
           <td><span class="${strategyCls}">${t.strategy}</span></td>
-          <td class="pair-cell">${t.pair}</td>
+          <td class="pair-cell">${fmtPair(t.pair)}</td>
           <td>${sidePill}</td>
           <td class="${pnlClass(t.close_profit_pct)}">${fmtPct(t.close_profit_pct)}</td>
           <td class="${pnlClass(t.close_profit_abs)}">${fmtUsd(t.close_profit_abs)}</td>
@@ -797,7 +807,7 @@ function renderAlerts(alerts) {
             <div class="alert-body">
               <div class="alert-title">
                 <span class="alert-bot-tag">${a.bot_name}</span>
-                진입 체결 · ${a.pair} · <span class="${a.is_short ? "neg" : "pos"}">${a.side_ko}</span>
+                진입 체결 · ${fmtPair(a.pair)} · <span class="${a.is_short ? "neg" : "pos"}">${a.side_ko}</span>
               </div>
             </div>
             <div class="alert-time">${timeAgo(a.time.replace("T", " ").slice(0, 19))}</div>
@@ -812,7 +822,7 @@ function renderAlerts(alerts) {
             <div class="alert-body">
               <div class="alert-title">
                 <span class="alert-bot-tag">${a.bot_name}</span>
-                청산 완료 · ${a.pair} · <span class="${cls}">${fmtPct(a.profit_ratio_pct)}</span>
+                청산 완료 · ${fmtPair(a.pair)} · <span class="${cls}">${fmtPct(a.profit_ratio_pct)}</span>
               </div>
               <div class="alert-sub">${fmtUsd(a.profit_amount)} ${a.stake_currency} · ${a.exit_reason_ko}</div>
             </div>
@@ -867,8 +877,42 @@ document.getElementById("pairFilter").addEventListener("input", (e) => {
   if (lastSummary) renderPositions(lastSummary, e.target.value.trim().toLowerCase());
 });
 
+function renderBotTabs(summary) {
+  const tabs = document.getElementById("botTabs");
+  if (!tabs) return;
+  const html = summary.bots
+    .map((b) => {
+      const active = b.id === selectedBotId ? "active" : "";
+      const dotCls = !b.connected ? "err" : "ok";
+      return `<button type="button" class="bot-tab ${active}" data-bot="${b.id}">
+        <span class="dot ${dotCls}"></span>${b.name}
+      </button>`;
+    })
+    .join("");
+  setHTMLIfChanged(tabs, html);
+}
+
+document.addEventListener("click", (e) => {
+  const tab = e.target.closest(".bot-tab");
+  if (tab && tab.dataset.bot && tab.dataset.bot !== selectedBotId) {
+    selectedBotId = tab.dataset.bot;
+    if (lastSummary) {
+      renderPositions(lastSummary, document.getElementById("pairFilter").value.trim().toLowerCase());
+    }
+  }
+});
+
 function renderPositions(summary, filter = "") {
+  renderBotTabs(summary);
+
   const grid = document.getElementById("botGrid");
+  // 선택된 탭에 해당하는 봇 하나만 전체 폭으로 보여준다 - 좌우로 나눠서
+  // 보여주면 표가 좁아져 배율/청산까지 같은 컬럼이 쪼그라들었다.
+  const bot = summary.bots.find((b) => b.id === selectedBotId) || summary.bots[0];
+  if (!bot) {
+    setHTMLIfChanged(grid, `<div class="empty-row">표시할 봇이 없습니다</div>`);
+    return;
+  }
 
   // 손익이 4초마다 바뀌어서 setHTMLIfChanged가 매번 innerHTML을 통째로
   // 교체하는데, 그때마다 포지션 표(가로로 넓어서 스크롤해서 보는 표)의
@@ -879,7 +923,7 @@ function renderPositions(summary, filter = "") {
     scrollLeftByBot[el.dataset.bot] = el.scrollLeft;
   });
 
-  const html = summary.bots.map((b) => renderBotCard(b, filter)).join("");
+  const html = renderBotCard(bot, filter);
   setHTMLIfChanged(grid, html);
 
   grid.querySelectorAll(".pos-table-wrap[data-bot]").forEach((el) => {
