@@ -791,7 +791,16 @@ def fetch_bot_summary(bot: dict, days: int = 14) -> dict:
                 ),
                 "trade_count": profit.get("trade_count", 0),
                 "winrate": profit.get("winrate", 0),
-                "max_drawdown": profit.get("max_drawdown", 0),
+                # freqtrade가 내려주는 max_drawdown(비율)도 profit_all_percent와 똑같이
+                # 계좌 공유로 오염된 시작자본을 분모로 써서 100%를 넘는 값(188% 등)이
+                # 나올 수 있다. max_drawdown_abs(달러 낙폭)는 순수 거래 기록만으로
+                # 계산되니 이건 그대로 믿고, 분모만 우리가 쓰는 안정된
+                # bot_starting_capital로 바꿔서 비율을 직접 낸다.
+                "max_drawdown": (
+                    profit.get("max_drawdown_abs", 0) / bot_starting_capital
+                    if bot_starting_capital
+                    else profit.get("max_drawdown", 0)
+                ),
                 "open_trades": [
                     {
                         "pair": t["pair"],
