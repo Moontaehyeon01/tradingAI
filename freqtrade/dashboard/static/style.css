@@ -634,9 +634,42 @@ body {
 
 /* Bot cards (positions) */
 
+/* 봇 선택 탭 - 좌우로 나눠서 보여주면 표가 좁아져 컬럼이 쪼그라들길래
+   탭으로 골라 한 번에 하나만, 전체 폭으로 보여주는 방식으로 바꿨다. */
+.bot-tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  margin-bottom: 14px;
+  width: fit-content;
+}
+.bot-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: var(--text-dim);
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+.bot-tab:hover { color: var(--text); }
+.bot-tab.active { background: var(--blue); color: #fff; }
+.bot-tab .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); flex-shrink: 0; }
+.bot-tab .dot.ok { background: var(--green); }
+.bot-tab .dot.err { background: var(--red); }
+.bot-tab.active .dot.ok { background: #fff; box-shadow: none; }
+
 .bot-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 
@@ -710,7 +743,12 @@ table.pos-table { width: 100%; border-collapse: collapse; }
   text-align: left; font-size: 11px; color: var(--text-dim);
   text-transform: uppercase; letter-spacing: 0.3px; padding: 10px 12px 6px; font-weight: 700;
 }
-.pos-table td { padding: 8px 12px; font-family: var(--font-mono); font-size: 12px; }
+.pos-table td {
+  padding: 8px 12px; font-family: var(--font-mono); font-size: 12px;
+  /* 컬럼 폭이 좁아지면(배율 "2x", 청산까지 "3일" 같은 짧은 값도) 줄바꿈
+     없이 표 자체가 가로 스크롤되게 한다 - 없으면 글자가 세로로 쪼개져 보였다. */
+  white-space: nowrap;
+}
 .pos-table tr:hover td { background: var(--card-hover); border-radius: var(--radius-sm); }
 
 .pair-cell { font-family: var(--font-ui); font-weight: 600; }

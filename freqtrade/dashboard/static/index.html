@@ -154,8 +154,15 @@
       </section>
 
       <section id="section-positions">
+        <!-- 봇 두 개를 좌우로 나눠 보여주면 표가 좁아져서(배율/청산까지 컬럼이
+             세로로 쪼개져 보일 정도로) 탭으로 골라 한 봇씩 전체 폭으로 보여준다.
+             기본은 XSectMomentum(지금 실제로 굴리는 쪽) - renderPositions()가
+             채운다. -->
+        <div class="bot-tabs" id="botTabs">
+          <!-- 탭 버튼이 JS로 렌더링됨 -->
+        </div>
         <div class="bot-grid" id="botGrid">
-          <!-- 봇 카드가 JS로 렌더링됨 -->
+          <!-- 선택된 봇 카드가 JS로 렌더링됨 -->
         </div>
 
         <!-- 봇이 모르는 내 매매.

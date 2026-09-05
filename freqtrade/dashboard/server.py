@@ -650,8 +650,31 @@ def api_account():
 # 실시간으로 역산하는 대신 한 번 계산해서 한동안 고정해두면, 진짜 잔고
 # 변화(입출금, 봇 간 잔고 재배분)가 있을 때만 서서히 갱신되고 상대 봇의
 # 매매 노이즈로는 흔들리지 않는다.
-_starting_capital_cache: dict[str, dict] = {}
 STARTING_CAPITAL_TTL = 4 * 3600  # 4시간
+# 대시보드를 배포할 때마다(하루에도 여러 번) 프로세스가 재시작되면서 메모리
+# 캐시가 날아갔는데, 마침 그 순간 봇이 정지 상태라 시작자본을 새로 잴 수
+# 없으면(아래 fetch_bot_summary 참고) 엉뚱한 값으로 되돌아가는 사고가 있었다
+# (-8.99 USDT 손실이 -3239% 로 표시됨). 재시작에도 살아남도록 파일에 저장한다.
+STARTING_CAPITAL_CACHE_FILE = ROOT / "starting_capital_cache.json"
+
+
+def _load_starting_capital_cache() -> dict:
+    try:
+        return json.loads(STARTING_CAPITAL_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _save_starting_capital_cache() -> None:
+    try:
+        STARTING_CAPITAL_CACHE_FILE.write_text(
+            json.dumps(_starting_capital_cache), encoding="utf-8"
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_starting_capital_cache: dict[str, dict] = _load_starting_capital_cache()
 
 
 def _stable_starting_capital(key: str, current_value: float, profit_abs: float) -> float:
@@ -661,6 +684,7 @@ def _stable_starting_capital(key: str, current_value: float, profit_abs: float) 
         return entry["value"]
     value = max(current_value - profit_abs, 0)
     _starting_capital_cache[key] = {"ts": now, "value": value}
+    _save_starting_capital_cache()
     return value
 
 
@@ -694,13 +718,25 @@ def fetch_bot_summary(bot: dict, days: int = 14) -> dict:
             if c.get("is_position") and c.get("is_bot_managed")
         )
         balance_bot_owned = own_free + own_positions_margin
-        # 아래 _stable_starting_capital 계산용 - 정지 상태여도 실제 보유분을
-        # 써야 한다(0으로 override된 값을 쓰면 시작자본이 음수/0으로 깨진다).
-        bot_owned_for_capital = balance_bot_owned
         profit_all_abs = profit.get("profit_all_coin", 0)
-        bot_starting_capital = _stable_starting_capital(
-            bot["id"], bot_owned_for_capital, profit_all_abs
-        )
+        # 정지된 봇은 포지션도 없고 own_free도 "계좌 전체 여유 USDT x 이 봇의
+        # ratio" 로 계속 흔들리는 값이라(다른 봇이 증거금을 얼마나 쓰고
+        # 있는지에 따라 같이 움직임), 이 상태에서 시작자본을 다시 역산하면
+        # 이 값이 우연히 작을 때 "실손실 -8.99 USDT가 -97%" 같은 헛수치가
+        # 나온다(실제로 겪음). 정지 중엔 새로 역산하지 않고, 마지막으로
+        # 실제 가동 중일 때 캐시해둔 값을 그대로 쓴다.
+        if config.get("state") == "stopped":
+            cached = _starting_capital_cache.get(bot["id"])
+            # 캐시가 아예 없으면(파일도 없던 첫 실행 등) 그래도 같은 공식으로는
+            # 맞춰서 반환한다 - balance_bot_owned를 그대로 쓰면 방금 겪었던
+            # 사고와 똑같이 분모가 손실액보다 작아서 % 가 폭발할 수 있다.
+            bot_starting_capital = (
+                cached["value"] if cached else max(balance_bot_owned - profit_all_abs, 0)
+            )
+        else:
+            bot_starting_capital = _stable_starting_capital(
+                bot["id"], balance_bot_owned, profit_all_abs
+            )
 
         # 봇이 정지 상태면 화면에는 잔고를 0으로 보여준다.
         #
