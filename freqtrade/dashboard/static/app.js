@@ -461,7 +461,7 @@ function renderDonut(summary) {
 
 /* ---------------- Position cards ---------------- */
 
-function renderOpenTrades(trades, filter) {
+function renderOpenTrades(trades, filter, botId) {
   const filtered = filter
     ? trades.filter((t) => t.pair.toLowerCase().includes(filter))
     : trades;
@@ -504,7 +504,7 @@ function renderOpenTrades(trades, filter) {
     })
     .join("");
   return `
-    <div class="pos-table-wrap">
+    <div class="pos-table-wrap" data-bot="${botId ?? ""}">
     <table class="pos-table">
       <thead>
         <tr><th>페어</th><th>방향</th><th>배율</th><th>진입가</th><th>현재가</th>
@@ -642,7 +642,7 @@ function renderBotCard(bot, filter) {
         <div class="mini-stat"><div class="l">승률</div><div class="v">${(bot.winrate * 100).toFixed(1)}%</div></div>
         <div class="mini-stat"><div class="l">MDD</div><div class="v neg">${(bot.max_drawdown * 100).toFixed(2)}%</div></div>
       </div>
-      ${renderOpenTrades(bot.open_trades, filter)}
+      ${renderOpenTrades(bot.open_trades, filter, bot.id)}
     </div>`;
 }
 
@@ -868,8 +868,24 @@ document.getElementById("pairFilter").addEventListener("input", (e) => {
 });
 
 function renderPositions(summary, filter = "") {
+  const grid = document.getElementById("botGrid");
+
+  // 손익이 4초마다 바뀌어서 setHTMLIfChanged가 매번 innerHTML을 통째로
+  // 교체하는데, 그때마다 포지션 표(가로로 넓어서 스크롤해서 보는 표)의
+  // 가로 스크롤 위치가 초기화돼 왼쪽으로 튕겨 보였다. 다시 그리기 전에
+  // 봇별로 스크롤 위치를 기억해뒀다가 그린 뒤 복원한다.
+  const scrollLeftByBot = {};
+  grid.querySelectorAll(".pos-table-wrap[data-bot]").forEach((el) => {
+    scrollLeftByBot[el.dataset.bot] = el.scrollLeft;
+  });
+
   const html = summary.bots.map((b) => renderBotCard(b, filter)).join("");
-  setHTMLIfChanged(document.getElementById("botGrid"), html);
+  setHTMLIfChanged(grid, html);
+
+  grid.querySelectorAll(".pos-table-wrap[data-bot]").forEach((el) => {
+    const saved = scrollLeftByBot[el.dataset.bot];
+    if (saved) el.scrollLeft = saved;
+  });
 }
 
 /* ---------------- Main refresh loop ---------------- */

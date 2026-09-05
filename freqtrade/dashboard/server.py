@@ -897,9 +897,22 @@ def api_summary():
     # 봇이 관리하지 않는 포지션(직접 잡은 것)을 페어 기준으로 중복 제거.
     # 화이트리스트 밖 페어(QQQ/TQQQ 등)는 freqtrade API 자체가 몰라서 여기
     # 안 잡힌다 - "보유 포지션" 카운트는 이것만으로는 못 만든다(아래에서 보강).
+    #
+    # 주의: fetch_bot_summary() 의 "unmanaged_positions" 는 그 봇 자신의
+    # /api/v1/balance 응답에 있는 is_bot_managed 만 보고 판단한 것이다.
+    # 계좌를 공유하는 다른 봇이 연 포지션은 "나(이 봇)" 입장에서는 당연히
+    # is_bot_managed=false 로 나오므로, 봇별 목록을 그냥 합치면 실제로는
+    # 우리 봇 중 하나가 관리 중인 포지션(ETH/LINK/T/SUI/EGLD/UNI 등)까지
+    # "미관리"로 잘못 뜬다. 연결된 봇들의 open_trades 에 실제로 있는 페어는
+    # 제외해야 진짜 수동 포지션만 남는다. (balance 응답의 "currency"가
+    # 선물 포지션에서는 "ETH" 가 아니라 "ETH/USDT:USDT" 처럼 open_trades의
+    # pair와 같은 전체 표기로 나온다 - 실측으로 확인함.)
+    managed_pairs = {t["pair"] for b in connected for t in b.get("open_trades", [])}
     unmanaged = {}
     for b in connected:
         for p in b.get("unmanaged_positions", []):
+            if p["pair"] in managed_pairs:
+                continue
             unmanaged[p["pair"]] = p
 
     # "보유 포지션" 카드는 봇이 여는 포지션뿐 아니라 계좌에 실제로 떠 있는
