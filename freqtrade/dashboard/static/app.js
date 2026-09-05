@@ -471,14 +471,11 @@ function renderDonut(summary) {
 
 /* ---------------- Position cards ---------------- */
 
-function renderOpenTrades(trades, filter, botId) {
-  const filtered = filter
-    ? trades.filter((t) => t.pair.toLowerCase().includes(filter))
-    : trades;
-  if (!filtered.length) {
-    return `<div class="empty-row">${filter ? "일치하는 포지션 없음" : "보유 포지션 없음"}</div>`;
+function renderOpenTrades(trades, botId) {
+  if (!trades.length) {
+    return `<div class="empty-row">보유 포지션 없음</div>`;
   }
-  const rows = filtered
+  const rows = trades
     .map((t) => {
       const sideClass = t.is_short ? "side-short" : "side-long";
       const sideLabel = t.is_short ? "SHORT" : "LONG";
@@ -624,12 +621,29 @@ document.addEventListener("click", (e) => {
   }
 });
 
-function renderBotCard(bot, filter) {
+// 봇 카드 헤더의 이름 자리 자체가 탭이다 - 전체 봇 목록을 받아 탭들을
+// 그리고, selectedBotId 에 해당하는 봇의 내용만 카드 나머지에 채운다.
+function renderBotTitleTabs(bots, selectedBotId) {
+  return `<div class="bot-title-tabs">${bots
+    .map((b) => {
+      const active = b.id === selectedBotId ? "active" : "";
+      const dotCls = !b.connected ? "err" : "ok";
+      return `<button type="button" class="bot-tab ${active}" data-bot="${b.id}">
+        <span class="dot ${dotCls}"></span>${b.name}
+      </button>`;
+    })
+    .join("")}</div>`;
+}
+
+function renderBotCard(bots, selectedBotId) {
+  const bot = bots.find((b) => b.id === selectedBotId) || bots[0];
+  if (!bot) return `<div class="empty-row">표시할 봇이 없습니다</div>`;
+
   if (!bot.connected) {
     return `
       <div class="bot-card">
         <div class="bot-card-head">
-          <div class="bot-title"><span class="dot err"></span>${bot.name}</div>
+          ${renderBotTitleTabs(bots, bot.id)}
         </div>
         <div class="card-error">봇에 연결할 수 없습니다${bot.error ? ` (${bot.error})` : ""}</div>
       </div>`;
@@ -638,7 +652,7 @@ function renderBotCard(bot, filter) {
   return `
     <div class="bot-card">
       <div class="bot-card-head">
-        <div class="bot-title"><span class="dot ok"></span>${bot.name}</div>
+        ${renderBotTitleTabs(bots, bot.id)}
         <div class="badge-row">
           <span class="lev-badge">${bot.leverage}x</span>
           ${renderBotPower(bot)}
@@ -650,7 +664,7 @@ function renderBotCard(bot, filter) {
         <div class="mini-stat"><div class="l">승률</div><div class="v">${(bot.winrate * 100).toFixed(1)}%</div></div>
         <div class="mini-stat"><div class="l">MDD</div><div class="v neg">${(bot.max_drawdown * 100).toFixed(2)}%</div></div>
       </div>
-      ${renderOpenTrades(bot.open_trades, filter, bot.id)}
+      ${renderOpenTrades(bot.open_trades, bot.id)}
     </div>`;
 }
 
@@ -871,46 +885,16 @@ document.addEventListener("click", (e) => {
   }
 });
 
-document.getElementById("pairFilter").addEventListener("input", (e) => {
-  if (lastSummary) renderPositions(lastSummary, e.target.value.trim().toLowerCase());
-});
-
-function renderBotTabs(summary) {
-  const tabs = document.getElementById("botTabs");
-  if (!tabs) return;
-  const html = summary.bots
-    .map((b) => {
-      const active = b.id === selectedBotId ? "active" : "";
-      const dotCls = !b.connected ? "err" : "ok";
-      return `<button type="button" class="bot-tab ${active}" data-bot="${b.id}">
-        <span class="dot ${dotCls}"></span>${b.name}
-      </button>`;
-    })
-    .join("");
-  setHTMLIfChanged(tabs, html);
-}
-
 document.addEventListener("click", (e) => {
   const tab = e.target.closest(".bot-tab");
   if (tab && tab.dataset.bot && tab.dataset.bot !== selectedBotId) {
     selectedBotId = tab.dataset.bot;
-    if (lastSummary) {
-      renderPositions(lastSummary, document.getElementById("pairFilter").value.trim().toLowerCase());
-    }
+    if (lastSummary) renderPositions(lastSummary);
   }
 });
 
-function renderPositions(summary, filter = "") {
-  renderBotTabs(summary);
-
+function renderPositions(summary) {
   const grid = document.getElementById("botGrid");
-  // 선택된 탭에 해당하는 봇 하나만 전체 폭으로 보여준다 - 좌우로 나눠서
-  // 보여주면 표가 좁아져 배율/청산까지 같은 컬럼이 쪼그라들었다.
-  const bot = summary.bots.find((b) => b.id === selectedBotId) || summary.bots[0];
-  if (!bot) {
-    setHTMLIfChanged(grid, `<div class="empty-row">표시할 봇이 없습니다</div>`);
-    return;
-  }
 
   // 손익이 4초마다 바뀌어서 setHTMLIfChanged가 매번 innerHTML을 통째로
   // 교체하는데, 그때마다 포지션 표(가로로 넓어서 스크롤해서 보는 표)의
@@ -921,7 +905,7 @@ function renderPositions(summary, filter = "") {
     scrollLeftByBot[el.dataset.bot] = el.scrollLeft;
   });
 
-  const html = renderBotCard(bot, filter);
+  const html = renderBotCard(summary.bots, selectedBotId);
   setHTMLIfChanged(grid, html);
 
   grid.querySelectorAll(".pos-table-wrap[data-bot]").forEach((el) => {
@@ -958,7 +942,7 @@ async function refresh() {
     renderStats(summary);
     renderEquityChart(summary);
     renderDonut(summary);
-    renderPositions(summary, document.getElementById("pairFilter").value.trim().toLowerCase());
+    renderPositions(summary);
     renderHistory(summary);
   }
   if (tickersRes.status === "fulfilled") renderTickers(tickersRes.value);

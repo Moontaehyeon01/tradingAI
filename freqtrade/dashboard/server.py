@@ -1635,7 +1635,31 @@ _news_lock = threading.Lock()
 # (실제로 겪음: 오후에 이미 "YOU USED ALL AVAILABLE FREE TRANSLATIONS
 # FOR TODAY" 429를 받기 시작함). 같은 원문은 캐시에서 즉시 돌려주고,
 # 실제로 API를 부르는 건 새로 나온 기사뿐이라 호출량이 크게 준다.
-_translation_cache: dict[str, str] = {}
+#
+# 그런데도 한도가 계속 다 닳는 걸 보고서야 알아챈 두 번째 원인: 이 캐시가
+# 메모리에만 있어서, 대시보드를 배포/재시작할 때마다(하루에도 여러 번)
+# 통째로 날아갔다. 재시작 직후 첫 새로고침에서 그 시점 30건 x 2필드가
+# 전부 "처음 보는 텍스트"가 되어 한 번에 재번역되는 게 반복되며 한도를
+# 스스로 계속 깎아먹고 있었다(starting_capital_cache 와 같은 종류의
+# 실수). 파일로 저장해서 재시작에도 살아남게 한다.
+_TRANSLATION_CACHE_FILE = ROOT / "translation_cache.json"
+
+
+def _load_translation_cache() -> dict:
+    try:
+        return json.loads(_TRANSLATION_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _save_translation_cache() -> None:
+    try:
+        _TRANSLATION_CACHE_FILE.write_text(json.dumps(_translation_cache), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_translation_cache: dict[str, str] = _load_translation_cache()
 _TRANSLATION_CACHE_MAX = 1000
 
 
@@ -1757,6 +1781,7 @@ def _refresh_news_once() -> None:
 
     with _news_lock:
         _news_cache.update({"ts": time.time(), "data": out})
+    _save_translation_cache()
 
 
 def _news_refresh_loop() -> None:

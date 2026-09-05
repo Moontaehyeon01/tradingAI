@@ -40,8 +40,32 @@
       </a>
     </nav>
 
-    <div class="mode-pill" id="modePill">
-      <span class="mode-dot" id="modeDot"></span> <span id="modeText">확인 중</span>
+    <div class="topnav-right">
+      <div class="mode-pill" id="modePill">
+        <span class="mode-dot" id="modeDot"></span> <span id="modeText">확인 중</span>
+      </div>
+      <div id="authControl"></div>
+      <div class="alert-anchor">
+        <button class="icon-btn" title="알림" id="bellBtn">
+          🔔<span class="ping" id="alertPing"></span>
+        </button>
+        <div class="alert-modal" id="alertModal" hidden>
+          <div class="alert-modal-head">
+            <span>최근 알림</span>
+            <button class="alert-modal-close" id="alertModalClose">✕</button>
+          </div>
+          <div class="alert-modal-body" id="alertsList">
+            <div class="empty-row">알림 불러오는 중…</div>
+          </div>
+        </div>
+      </div>
+      <div class="profile">
+        <div class="avatar">FT</div>
+        <div class="profile-text">
+          <span class="profile-name">Binance Futures</span>
+          <span class="profile-sub" id="statusText">연결 확인 중</span>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -64,37 +88,6 @@
   <!-- ===== Main ===== -->
   <div class="main">
 
-    <header class="topbar">
-      <div class="search-box">
-        <span class="search-icon">⌕</span>
-        <input id="pairFilter" type="text" placeholder="페어 검색 (예: BTC)" />
-      </div>
-
-      <div class="topbar-right">
-        <div id="authControl"></div>
-        <div class="alert-anchor">
-          <button class="icon-btn" title="알림" id="bellBtn">
-            🔔<span class="ping" id="alertPing"></span>
-          </button>
-          <div class="alert-modal" id="alertModal" hidden>
-            <div class="alert-modal-head">
-              <span>최근 알림</span>
-              <button class="alert-modal-close" id="alertModalClose">✕</button>
-            </div>
-            <div class="alert-modal-body" id="alertsList">
-              <div class="empty-row">알림 불러오는 중…</div>
-            </div>
-          </div>
-        </div>
-        <div class="profile">
-          <div class="avatar">FT</div>
-          <div class="profile-text">
-            <span class="profile-name">Binance Futures</span>
-            <span class="profile-sub" id="statusText">연결 확인 중</span>
-          </div>
-        </div>
-      </div>
-    </header>
 
     <section class="content">
 
@@ -155,14 +148,11 @@
 
       <section id="section-positions">
         <!-- 봇 두 개를 좌우로 나눠 보여주면 표가 좁아져서(배율/청산까지 컬럼이
-             세로로 쪼개져 보일 정도로) 탭으로 골라 한 봇씩 전체 폭으로 보여준다.
-             기본은 XSectMomentum(지금 실제로 굴리는 쪽) - renderPositions()가
-             채운다. -->
-        <div class="bot-tabs" id="botTabs">
-          <!-- 탭 버튼이 JS로 렌더링됨 -->
-        </div>
+             세로로 쪼개져 보일 정도로) 카드 헤더의 봇 이름 자체를 탭으로 만들어
+             한 봇씩 전체 폭으로 보여준다. 기본은 XSectMomentum(지금 실제로
+             굴리는 쪽) - renderPositions()가 채운다. -->
         <div class="bot-grid" id="botGrid">
-          <!-- 선택된 봇 카드가 JS로 렌더링됨 -->
+          <!-- 봇 탭 + 선택된 봇 카드가 JS로 렌더링됨 -->
         </div>
 
         <!-- 봇이 모르는 내 매매.
