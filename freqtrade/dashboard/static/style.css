@@ -958,6 +958,11 @@ table.pos-table { width: 100%; border-collapse: collapse; }
 .pos-table .lvl-d {
   display: block; font-size: 9.5px; color: var(--text-faint); font-weight: 500;
 }
+/* 손익 셀: 금액 아래에 %를 작게 - lvl-d와 달리 색은 고정 회색이 아니라
+   부모(pnlClass가 준 빨강/초록)를 그대로 물려받아야 해서 별도 클래스로 뺐다. */
+.pos-table .pnl-sub {
+  display: block; font-size: 10.5px; font-weight: 600; color: inherit;
+}
 /* 시간청산이 임박하면 눈에 띄게 */
 .pos-table td.warn, .history-table td.warn { color: var(--orange); font-weight: 700; }
 

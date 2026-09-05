@@ -500,16 +500,14 @@ function renderOpenTrades(trades, filter, botId) {
       const remCls = rem !== null && rem !== undefined && rem < 6 ? "warn" : "";
       return `
         <tr>
-          <td class="pair-cell">${fmtPair(t.pair)}</td>
+          <td class="pair-cell">${fmtPair(t.pair)}<span class="lvl-d">${t.leverage}x</span></td>
           <td><span class="side-pill ${sideClass}">${sideLabel}</span></td>
-          <td>${t.leverage}x</td>
           <td>${fmtNum(t.open_rate)}</td>
           <td>${fmtNum(t.current_rate)}</td>
-          <td class="lvl neg">${fmtNum(sl)}${slD === null ? "" : `<span class="lvl-d">${slD > 0 ? "+" : ""}${slD.toFixed(1)}%</span>`}</td>
+          <td class="${pnlClass(t.profit_abs)}">${fmtUsd(t.profit_abs)} USDT<span class="pnl-sub">${fmtPct(t.profit_pct)}</span></td>
           <td class="lvl pos">${fmtNum(tp)}${tpD === null ? "" : `<span class="lvl-d">${tpD > 0 ? "+" : ""}${tpD.toFixed(1)}%</span>`}</td>
+          <td class="lvl neg">${fmtNum(sl)}${slD === null ? "" : `<span class="lvl-d">${slD > 0 ? "+" : ""}${slD.toFixed(1)}%</span>`}</td>
           <td class="${remCls}">${remTxt}</td>
-          <td class="${pnlClass(t.profit_pct)}">${fmtPct(t.profit_pct)}</td>
-          <td class="${pnlClass(t.profit_abs)}">$${fmtUsd(t.profit_abs)}</td>
         </tr>`;
     })
     .join("");
@@ -517,8 +515,8 @@ function renderOpenTrades(trades, filter, botId) {
     <div class="pos-table-wrap" data-bot="${botId ?? ""}">
     <table class="pos-table">
       <thead>
-        <tr><th>페어</th><th>방향</th><th>배율</th><th>진입가</th><th>현재가</th>
-            <th>손절</th><th>익절</th><th>청산까지</th><th>손익%</th><th>손익$</th></tr>
+        <tr><th>페어(배율)</th><th>방향</th><th>진입가</th><th>현재가</th>
+            <th>손익</th><th>익절</th><th>손절</th><th>청산까지</th></tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
