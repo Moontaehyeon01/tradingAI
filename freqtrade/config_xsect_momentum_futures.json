@@ -12,6 +12,12 @@
     "trading_mode": "futures",
     "margin_mode": "isolated",
     "leverage": 2,
+    "order_types": {
+        "entry": "limit",
+        "exit": "market",
+        "stoploss": "limit",
+        "stoploss_on_exchange": false
+    },
     "unfilledtimeout": {
         "entry": 10,
         "exit": 10,
@@ -28,7 +34,7 @@
         }
     },
     "exit_pricing": {
-        "price_side": "same",
+        "price_side": "other",
         "use_order_book": true,
         "order_book_top": 1
     },
