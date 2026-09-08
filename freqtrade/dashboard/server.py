@@ -120,6 +120,23 @@ if NOTIFICATIONS_FILE.exists():
                 pass
 
 
+def _resort_notifications() -> None:
+    """notifications는 '맨 앞 = 최신'이 불변식인데, backfill이 뒤늦게 발견한
+    과거 이력을 파일 끝에 그냥 append(=다음 재시작 때 맨 앞 쪽으로 로드)해버리면
+    이 불변식이 깨진다 - 실제로 겪음: 재시작 때 오전 0시대 리밸런싱 기록이
+    이미 로드돼있던 낮 12시대 알림보다 앞에 꽂혀서, 프론트의 "새 알림 감지"
+    기준시각이 과거로 되돌아가며 이미 재생한 알림음이 계속 반복 재생됐다.
+    대량으로 채워 넣은 직후(시작 시 파일 로드, backfill)에만 time 기준으로
+    다시 정렬해 이 불변식을 되살린다 - 실시간 웹훅 한 건마다 매번 정렬할
+    필요는 없다(그 경로는 애초에 순서대로 들어옴)."""
+    ordered = sorted(notifications, key=lambda n: n.get("time") or "", reverse=True)
+    notifications.clear()
+    notifications.extend(ordered)
+
+
+_resort_notifications()
+
+
 def record_notification(entry: dict):
     notifications.appendleft(entry)
     try:
@@ -1607,6 +1624,11 @@ def backfill_notifications() -> int:
         )
         existing.add(key)
         added += 1
+    if added:
+        # 위에서 넣은 새 항목들은 서로간엔 시간순이어도, 이미 있던 알림들
+        # 사이 어딘가에 끼어야 할 수 있다(뒤늦게 발견된 과거 이력 등) -
+        # 통째로 다시 정렬해야 "맨 앞 = 최신" 불변식이 안 깨진다.
+        _resort_notifications()
     return added
 
 
