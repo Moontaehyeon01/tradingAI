@@ -62,6 +62,10 @@ TELEGRAM_CHAT_ID = os.environ.get("FREQTRADE__TELEGRAM__CHAT_ID", "")
 # 그리고 이 엔드포인트는 인터넷에 열려있는 /webhook 경로라서 아무나 못 부르게 막는 용도)
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
+# AI 시황 의견(참고용, 자동매매와 무관) 생성에 쓴다. 키가 없으면 그 페이지만
+# "설정 필요" 상태로 비활성화되고 나머지 대시보드는 그대로 동작한다.
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
 
 BOTS = [
     # 주의: 거래당 실효배율 = (tradable_balance_ratio / max_open_trades) x leverage.
@@ -996,27 +1000,28 @@ def api_summary():
     )
 
 
+def _fetch_futures_tickers(symbols: list[str]) -> list[dict]:
+    """봇이 실제로 거래하는 시세와 맞춰서 스팟이 아니라 선물(USDT-M) 가격을 씀.
+    선물 24hr 티커 API는 스팟과 달리 "symbols" 배열 파라미터를 지원하지 않아서
+    전체를 받아온 뒤 여기서 원하는 심볼만 골라낸다."""
+    resp = requests.get("https://fapi.binance.com/fapi/v1/ticker/24hr", timeout=4)
+    resp.raise_for_status()
+    wanted = set(symbols)
+    return [
+        {
+            "symbol": t["symbol"],
+            "price": float(t["lastPrice"]),
+            "change_pct": float(t["priceChangePercent"]),
+        }
+        for t in resp.json()
+        if t["symbol"] in wanted
+    ]
+
+
 @app.get("/api/tickers")
 def api_tickers():
     try:
-        # 봇이 실제로 거래하는 시세와 맞춰서 스팟이 아니라 선물(USDT-M) 가격을 보여줌.
-        # 선물 24hr 티커 API는 스팟과 달리 "symbols" 배열 파라미터를 지원하지 않아서
-        # 전체를 받아온 뒤 여기서 원하는 심볼만 골라냄.
-        resp = requests.get("https://fapi.binance.com/fapi/v1/ticker/24hr", timeout=4)
-        resp.raise_for_status()
-        data = resp.json()
-        wanted = set(TICKER_SYMBOLS)
-        return jsonify(
-            [
-                {
-                    "symbol": t["symbol"],
-                    "price": float(t["lastPrice"]),
-                    "change_pct": float(t["priceChangePercent"]),
-                }
-                for t in data
-                if t["symbol"] in wanted
-            ]
-        )
+        return jsonify(_fetch_futures_tickers(TICKER_SYMBOLS))
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 502
 
@@ -1803,6 +1808,144 @@ def api_news():
         return jsonify({"news": list(_news_cache["data"])})
 
 
+# ===================== AI 시황 의견 (참고용, 자동매매와 무관) =====================
+#
+# 이 프로젝트의 실전 봇(BoxBreakoutV2/XSectMomentum)은 전부 수개월치 백테스트로
+# "이 규칙이 통계적 엣지가 있는가"를 검증하고 나서 실전에 올렸다. LLM이 그때그때
+# 내놓는 시황 의견은 같은 방식으로 재현/검증할 방법이 없다(같은 입력에도 매번
+# 다른 답이 나올 수 있고, 과거 시점의 답을 다시 받아볼 수도 없음) - 그래서 이건
+# 절대 주문에 연결하지 않고, 사람이 참고만 하는 화면 한 칸으로만 존재한다.
+#
+# 뉴스 번역(MyMemory)과 다른 점: 이건 유료 API라서(무료 재시도 X) 대시보드
+# 재배포 때마다 캐시가 날아가 즉시 재호출되는 걸 막는 게 이번엔 "한도 초과"가
+# 아니라 "돈이 샌다"의 문제다 - 위 두 캐시(starting_capital, translation)에서
+# 겪은 것과 같은 실수를 반복하지 않도록 처음부터 파일에 저장해서 재시작에도
+# 살아남게 하고, TTL이 남아있으면 재시작 직후에도 재호출하지 않는다.
+AI_OPINION_MODEL = "gpt-4o-mini"
+AI_OPINION_REFRESH_SEC = 30 * 60  # 30분 - 시황 요약이 4초마다 바뀔 이유가 없고 호출당 비용도 든다
+AI_OPINION_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+AI_OPINION_CACHE_FILE = ROOT / "ai_opinion_cache.json"
+_ai_opinion_lock = threading.Lock()
+
+
+def _load_ai_opinion_cache() -> dict:
+    try:
+        return json.loads(AI_OPINION_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {"ts": 0.0, "data": None}
+
+
+def _save_ai_opinion_cache() -> None:
+    try:
+        AI_OPINION_CACHE_FILE.write_text(json.dumps(_ai_opinion_cache), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_ai_opinion_cache: dict = _load_ai_opinion_cache()
+
+
+def _refresh_ai_opinion_once() -> None:
+    if not OPENAI_API_KEY:
+        return
+
+    try:
+        tickers = _fetch_futures_tickers(AI_OPINION_SYMBOLS)
+    except Exception:  # noqa: BLE001
+        tickers = []
+    with _news_lock:
+        headlines = [n["title"] for n in _news_cache["data"][:15]]
+
+    market_lines = "\n".join(
+        f"- {t['symbol']}: ${t['price']:,.4g} ({t['change_pct']:+.2f}% / 24h)" for t in tickers
+    ) or "(시세 조회 실패)"
+    news_lines = "\n".join(f"- {h}" for h in headlines) or "(뉴스 없음)"
+
+    prompt = f"""아래는 지금 시점의 바이낸스 선물 주요 종목 시세와 최근 크립토 뉴스 헤드라인이다.
+
+[시세 (24시간 변동률)]
+{market_lines}
+
+[최근 뉴스 헤드라인]
+{news_lines}
+
+이 정보를 바탕으로 BTC, ETH, SOL, XRP 각각에 대해 지금 시점 기준 시황 의견을 한국어로 작성해라.
+다음 JSON 스키마로만 답하라(다른 텍스트 없이):
+{{
+  "market_summary": "전체 시장에 대한 2~3문장 요약",
+  "coins": [
+    {{"symbol": "BTC", "view": "강세|약세|중립", "confidence": "높음|중간|낮음", "reasoning": "1~2문장 근거"}},
+    ... (ETH, SOL, XRP도 같은 형식)
+  ],
+  "caveat": "이 의견의 한계에 대한 짧은 한 문장 (예: 표본이 뉴스 헤드라인 수준이라 근거가 얕다는 점 등)"
+}}"""
+
+    resp = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": AI_OPINION_MODEL,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "너는 암호화폐 시황을 요약하는 애널리스트다. 확정적인 예측이 아니라 "
+                        "가능성 기반의 의견을 제시하고, 과장하지 않는다. 반드시 요청된 JSON "
+                        "스키마로만 응답한다."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.3,
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    content = resp.json()["choices"][0]["message"]["content"]
+    parsed = json.loads(content)
+
+    with _ai_opinion_lock:
+        _ai_opinion_cache.update(
+            {
+                "ts": time.time(),
+                "data": {
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "model": AI_OPINION_MODEL,
+                    **parsed,
+                },
+            }
+        )
+    _save_ai_opinion_cache()
+
+
+def _ai_opinion_refresh_loop() -> None:
+    """뉴스 스레드와 달리 '시작하자마자 한 번' 무조건 부르지 않는다 - 재배포로
+    막 재시작됐을 때 파일 캐시가 아직 TTL 안에 있으면 그대로 두고, 진짜
+    만료됐을 때만 유료 API를 호출한다."""
+    while True:
+        try:
+            if time.time() - _ai_opinion_cache.get("ts", 0) >= AI_OPINION_REFRESH_SEC:
+                _refresh_ai_opinion_once()
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(60)
+
+
+@app.get("/api/ai_opinion")
+def api_ai_opinion():
+    if not OPENAI_API_KEY:
+        return jsonify({"error": "OPENAI_API_KEY가 설정되지 않았습니다.", "data": None}), 200
+    with _ai_opinion_lock:
+        data = _ai_opinion_cache.get("data")
+    if data is None:
+        return jsonify({"error": None, "data": None, "pending": True}), 200
+    return jsonify({"error": None, "data": data})
+
+
 if __name__ == "__main__":
     # 로컬 개발 시엔 기본값(127.0.0.1)만 노출됨. 서버에 배포해서 외부 접속을
     # 받아야 할 때만 DASHBOARD_HOST=0.0.0.0 을 명시적으로 지정해서 실행할 것
@@ -1820,5 +1963,6 @@ if __name__ == "__main__":
     # _refresh_news_once() 를 따로 한 번 더 부르면 두 스레드가 동시에 같은
     # RSS/번역 API를 이중으로 호출하게 된다).
     threading.Thread(target=_news_refresh_loop, daemon=True).start()
+    threading.Thread(target=_ai_opinion_refresh_loop, daemon=True).start()
 
     app.run(host=host, port=5000, debug=False, threaded=True)
