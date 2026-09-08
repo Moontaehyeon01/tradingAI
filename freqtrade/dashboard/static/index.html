@@ -38,6 +38,9 @@
       <a class="nav-item" data-target="section-history">
         <span class="nav-icon">⏱</span> History
       </a>
+      <a class="nav-item" data-target="section-ai">
+        <span class="nav-icon">✦</span> AI 분석
+      </a>
     </nav>
 
     <div class="topnav-right">
@@ -288,6 +291,21 @@
         </div>
       </section>
 
+      <!-- ===== AI 시황 의견 (참고용, 자동매매와 무관) =====
+           봇들은 전부 몇 달치 백테스트로 검증한 규칙으로 돌아가는데, 이건 LLM이
+           그때그때 내놓는 의견이라 같은 방식으로 검증할 수가 없다. 그래서 주문에
+           절대 연결하지 않고, 사람이 참고만 하는 화면으로 분리해뒀다. -->
+      <section id="section-ai" class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title">AI 시황 의견 <span class="panel-title-en">· Reference only</span></div>
+            <div class="panel-sub">참고용 의견입니다 · 자동매매에 연결되어 있지 않습니다 · 30분마다 갱신</div>
+          </div>
+        </div>
+        <div id="aiOpinionBody">
+          <div class="empty-row">불러오는 중…</div>
+        </div>
+      </section>
 
     </section>
 
@@ -332,6 +350,7 @@
   <a class="nav-item" data-target="section-signals"><span class="nav-icon">◈</span>신호</a>
   <a class="nav-item" data-target="section-charts"><span class="nav-icon">📈</span>성과</a>
   <a class="nav-item" data-target="section-history"><span class="nav-icon">⏱</span>내역</a>
+  <a class="nav-item" data-target="section-ai"><span class="nav-icon">✦</span>AI</a>
 </nav>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
@@ -339,6 +358,7 @@
 <script src="signals.js"></script>
 <script src="account.js"></script>
 <script src="news.js"></script>
+<script src="ai.js"></script>
 
 <!-- 오른쪽 사이드 패널의 BTC/QQQ 차트. tv.js 는 한 번만 로드하고 위젯을
      두 번 생성한다. autosize 로 컨테이너(.tv-chart, CSS에서 고정 높이)
