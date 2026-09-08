@@ -784,8 +784,16 @@ document.getElementById("equityPeriodToggle")?.addEventListener("click", (e) => 
 function checkNewAlertsAndPlaySound(alerts) {
   if (!alerts.length) return;
 
+  // alerts[0]이 항상 최신이라고 믿지 않는다 - 서버가 뒤늦게 발견한 과거
+  // 이력을 채워 넣는 과정에서 한 번 이 가정이 깨진 적이 있고(맨 앞이 실제로는
+  // 과거 시각이라 기준시각이 되돌아가며 이미 재생한 알림음이 반복 재생됨),
+  // 그건 서버 쪽에서 고쳤지만 여기서도 실제 최댓값을 직접 구해서 한 번 더
+  // 방어한다. ISO 8601 문자열은 사전식 비교가 시간순 비교와 일치한다.
+  let maxTime = alerts[0].time;
+  for (const a of alerts) if (a.time > maxTime) maxTime = a.time;
+
   if (lastSeenAlertTime === null) {
-    lastSeenAlertTime = alerts[0].time;
+    lastSeenAlertTime = maxTime;
     return;
   }
 
@@ -795,13 +803,15 @@ function checkNewAlertsAndPlaySound(alerts) {
   // 오래된 것부터 순서대로 소리 재생
   newOnes
     .slice()
-    .reverse()
+    .sort((a, b) => (a.time > b.time ? 1 : -1))
     .forEach((a) => {
       if (a.event === "entry_fill") playEntrySound();
       else if (a.event === "exit_fill") playExitSound((a.profit_ratio_pct ?? 0) >= 0);
     });
 
-  lastSeenAlertTime = alerts[0].time;
+  // 기준시각은 앞으로만 움직인다 - 혹시라도 이번에 온 alerts의 최댓값이
+  // 기존 기준시각보다 과거라면(있어선 안 되지만) 절대 되돌리지 않는다.
+  if (maxTime > lastSeenAlertTime) lastSeenAlertTime = maxTime;
 }
 
 function renderAlerts(alerts) {
