@@ -56,8 +56,25 @@ XSectMomentumStrategy — 횡단면 모멘텀 (시장중립 롱숏)
     수익률이 고정 30% 대비 거의 2배로 나왔다.
     자세한 스캔 결과는 대시보드/커밋 기록 참고.
 
+  2026-09-14 순위를 하루 1회로 고정: bot_loop_start 가 루프(몇 초~몇십 초)
+    마다 순위를 다시 계산하고 있었는데, 자정 직후 몇 분은 일부 페어의 당일
+    봉이 아직 안 들어온 상태라 이 시간대에 도는 여러 번의 루프마다 순위
+    구성원이 미묘하게 달라질 수 있었다. populate_entry_trend는 페어마다
+    독립 호출되는데 그 순간 self._longs/_shorts가 어느 스냅샷이었는지에
+    따라 페어별로 다른 "오늘의 목표"를 보게 되고, 한 번 신호 없이 지나간
+    페어는 process_only_new_candles 때문에 그날 다시 기회가 없었다.
+    실측으로 확인된 피해: 9/11~9/13 사흘간 하루에 2~3개씩만 신호가 나서
+    롱4:숏2로 시장중립이 깨진 채 누적됨(9/9엔 아예 슬롯 하나가 남은 증거금
+    부족으로 8개월 최소단위로 겨우 체결되기도 함 - 전부 같은 근본 원인).
+    이제 하루 중 처음 확정된 순위를 그날 내내 고정해서 쓴다(자정 후 2분은
+    데이터가 덜 갱신됐을 수 있어 그 사이엔 순위를 비워 진입을 아예 막고,
+    2분이 지난 뒤 첫 계산 결과를 그날 종일 재사용). 실패해도(페어 데이터
+    부족 등) 그날은 재시도하지 않고 다음날까지 대기 - 재시도가 오히려
+    또 다른 시점의 스냅샷을 만들어 같은 문제를 반복시키기 때문이다.
+
 설계
   - 매일(1d 봉) 감시 페어 전체의 lookback일 수익률을 계산해 순위를 매긴다
+    (하루 중 자정+2분 이후 첫 계산 결과를 그날 내내 고정 - 위 2026-09-14 주석 참고)
   - 상위 top_k -> 롱, 하위 top_k -> 숏
   - 진입가 대비, 그 종목의 변동성에 맞춘 익절폭만큼 가격이 유리하게
     움직이면 즉시 청산 (아래 take_profit_vol_mult 주석 참고)
@@ -114,12 +131,20 @@ class XSectMomentumStrategy(IStrategy):
         # 클래스 속성으로 두면 spot 설정에서 freqtrade가 시작 시점에 하드 에러를 낸다
         return self.config.get("trading_mode") == "futures"
 
+    # 자정 직후 이 시간 동안은 순위를 계산하지 않는다 - 일부 페어의 당일 봉이
+    # 아직 안 들어왔을 수 있어서, 너무 일찍 확정하면 그 미갱신 스냅샷이
+    # 하루 종일 굳어버린다.
+    RANK_LOCK_DELAY = timedelta(minutes=2)
+
     def __init__(self, config: dict) -> None:
         super().__init__(config)
         # bot_loop_start 에서 채우고 populate_entry_trend / custom_exit 에서 읽는다
         self._longs: set = set()
         self._shorts: set = set()
         self._ranked_at = None
+        # 오늘(date) 순위를 이미 확정했는지 - 확정했으면 그날은 다시 계산하지
+        # 않는다(성공/실패 여부와 무관하게 "오늘은 시도 끝"으로 취급).
+        self._ranked_date = None
         self._tp_by_pair: dict = {}
 
     def leverage(self, pair, current_time, current_rate, proposed_leverage,
@@ -131,11 +156,27 @@ class XSectMomentumStrategy(IStrategy):
     # 루프 시작 시점에 한 번만 해두고 각 페어가 그 결과를 참조한다.
     # ------------------------------------------------------------------
     def bot_loop_start(self, current_time: datetime, **kwargs) -> None:
+        # 익절폭은 순위와 무관하게 매 루프 최신화한다 - 오늘 순위에 안 들어도
+        # 이미 열려있는 포지션의 익절폭은 계속 최신으로 유지해야 한다.
+        self._tp_by_pair = self._compute_tp_by_pair()
+
+        today = current_time.date()
+        if self._ranked_date == today:
+            return  # 오늘은 이미 확정했다 - 재계산하지 않는다(위 2026-09-14 주석 참고)
+
+        # 날짜가 바뀌었는데 아직 오늘 순위를 못 정했다 -> 새로 정하기 전까지는
+        # 어제 순위로 잘못 진입하지 않도록 일단 비워둔다.
+        self._longs, self._shorts = set(), set()
+
+        since_midnight = current_time - current_time.replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        if since_midnight < self.RANK_LOCK_DELAY:
+            return  # 자정 버퍼 시간 - 이번 루프는 넘기고 다음 루프에 다시 시도
+
         lb = self.lookback.value
         k = self.top_k.value
         scores = {}
-        tp_by_pair = {}
-
         for pair in self.dp.current_whitelist():
             df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
             if df is None or len(df) < lb + 2:
@@ -146,9 +187,26 @@ class XSectMomentumStrategy(IStrategy):
             if np.isfinite(now) and np.isfinite(past) and past > 0:
                 scores[pair] = now / past - 1.0
 
-            # 익절폭: 이 종목의 최근 3일 수익률 표준편차 x 배수. 랭킹 계산과
-            # 별개로 - 오늘 순위에 안 들어도 이미 열려있는 포지션의 익절폭은
-            # 계속 최신으로 유지해야 하므로 감시 페어 전체에 대해 계산한다.
+        # 성공하든 실패하든 "오늘은 시도 끝"으로 표시한다 - 데이터가 부족해서
+        # 못 정했다고 같은 날 안에서 계속 재시도하면 그것대로 시점마다 다른
+        # 스냅샷을 만들 수 있다. 못 정한 날은 그냥 하루 쉬고 내일 다시 본다.
+        self._ranked_date = today
+
+        # 상위/하위를 뽑으려면 양쪽에 최소 k개씩은 있어야 한다
+        if len(scores) < 2 * k:
+            return
+
+        order = sorted(scores, key=scores.get)
+        self._shorts = set(order[:k])
+        self._longs = set(order[-k:])
+        self._ranked_at = current_time
+
+    def _compute_tp_by_pair(self) -> dict:
+        tp_by_pair = {}
+        for pair in self.dp.current_whitelist():
+            df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+            if df is None:
+                continue
             ret3 = df["close"].pct_change(3)
             # 진행 중인 마지막 봉은 제외하고, 최근 vol_window개만 본다.
             window = ret3.iloc[-(self.take_profit_vol_window + 2):-1].dropna()
@@ -159,17 +217,7 @@ class XSectMomentumStrategy(IStrategy):
                     tp_by_pair[pair] = float(
                         np.clip(tp, self.take_profit_min_pct, self.take_profit_max_pct)
                     )
-        self._tp_by_pair = tp_by_pair
-
-        # 상위/하위를 뽑으려면 양쪽에 최소 k개씩은 있어야 한다
-        if len(scores) < 2 * k:
-            self._longs, self._shorts = set(), set()
-            return
-
-        order = sorted(scores, key=scores.get)
-        self._shorts = set(order[:k])
-        self._longs = set(order[-k:])
-        self._ranked_at = current_time
+        return tp_by_pair
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         lb = self.lookback.value
