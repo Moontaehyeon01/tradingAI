@@ -1552,6 +1552,34 @@ def _notif_dedup_key(pair: str, when_iso: str) -> tuple:
     return (pair, when_iso[:19])
 
 
+def _send_backfill_telegram(t: dict) -> None:
+    """실시간 웹훅으로는 못 받은 청산(수동 청산이 대부분 - 바이낸스에서 직접
+    닫으면 freqtrade가 아예 모르는 거래라 웹훅 자체가 없다)을 나중에
+    backfill_notifications()가 발견했을 때 보낸다. webhook_relay()의
+    exit_fill 문구와 거의 같지만, 실시간이 아니라 뒤늦게 찾아낸 것임을
+    표시해서 체결 시각과 알림 도착 시각이 다를 수 있다는 걸 알려준다."""
+    side_ko = "매수" if t.get("is_short") else "매도"
+    try:
+        profit_ratio_pct = float(t.get("profit_ratio_pct") or 0)
+    except (TypeError, ValueError):
+        profit_ratio_pct = 0.0
+    try:
+        profit_amount = float(t.get("profit_amount") or 0)
+    except (TypeError, ValueError):
+        profit_amount = 0.0
+    text = (
+        f"[{t['bot_name']}] [선물 청산 · 뒤늦게 발견됨]\n"
+        f"종목: {t['pair']}\n"
+        f"방향: {side_ko}\n"
+        f"상태: 청산 완료\n"
+        f"실현 수익률: {profit_ratio_pct:.4f}%\n"
+        f"실현 손익: {profit_amount:.4f} USDT\n"
+        f"사유: {t.get('exit_reason_ko') or '-'}\n"
+        f"====================="
+    )
+    send_telegram(text)
+
+
 def backfill_notifications() -> int:
     """청산 이력(봇 + 수동)에는 있는데 '최근 알림'엔 없는 것들을 시간순으로
     채워 넣는다.
@@ -1622,6 +1650,10 @@ def backfill_notifications() -> int:
                 "exit_reason_ko": t["exit_reason_ko"],
             }
         )
+        # 여기 들어온 건 정의상 실시간 웹훅으로 못 받은 것들이다(대부분 수동
+        # 청산). dedup 덕분에 이미 알림이 있던 것들은 위 continue 에서
+        # 걸러지므로, 실시간 웹훅이 이미 보낸 것과 중복 발송될 일은 없다.
+        _send_backfill_telegram(t)
         existing.add(key)
         added += 1
     if added:
@@ -1630,6 +1662,21 @@ def backfill_notifications() -> int:
         # 통째로 다시 정렬해야 "맨 앞 = 최신" 불변식이 안 깨진다.
         _resort_notifications()
     return added
+
+
+BACKFILL_NOTIF_REFRESH_SEC = 120  # 수동 청산을 텔레그램으로 받아보는 데 걸리는 최대 지연
+
+
+def _backfill_notifications_loop() -> None:
+    """예전엔 서버 시작할 때 딱 한 번만 돌았다 - 그러면 수동 청산은 다음 재배포
+    때까지(며칠씩 걸릴 수 있음) 텔레그램을 못 받는다. 이제 주기적으로 돌려서
+    수동 거래도 몇 분 안에 알림이 오게 한다."""
+    while True:
+        try:
+            backfill_notifications()
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(BACKFILL_NOTIF_REFRESH_SEC)
 
 
 # ============================================================
@@ -1973,18 +2020,16 @@ if __name__ == "__main__":
     # 받아야 할 때만 DASHBOARD_HOST=0.0.0.0 을 명시적으로 지정해서 실행할 것
     # (보안그룹 등 방화벽에서 이미 접근을 제한하고 있어야 안전함)
     host = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
-    try:
-        n = backfill_notifications()
-        print(f"[startup] 청산 이력에서 알림 {n}건 채움")
-    except Exception as exc:  # noqa: BLE001
-        # 봇 컨테이너가 아직 안 떠 있는 등으로 실패해도 대시보드 자체는 떠야 한다
-        print(f"[startup] 알림 백필 실패(무시하고 계속): {exc}")
 
     # 뉴스는 백그라운드 스레드가 계속 갱신한다. _news_refresh_loop 자체가
     # 시작하자마자 한 번 채우고 도니, 스레드를 하나만 띄운다(이걸 놓치고
     # _refresh_news_once() 를 따로 한 번 더 부르면 두 스레드가 동시에 같은
-    # RSS/번역 API를 이중으로 호출하게 된다).
+    # RSS/번역 API를 이중으로 호출하게 된다). 알림 백필도 같은 이유로
+    # _backfill_notifications_loop 하나만 띄운다(시작하자마자 한 번 돌고
+    # 이후 주기적으로 재실행함 - 예전엔 시작할 때 한 번만 돌아서 수동 청산이
+    # 다음 재배포 때까지 텔레그램을 못 받았다).
     threading.Thread(target=_news_refresh_loop, daemon=True).start()
     threading.Thread(target=_ai_opinion_refresh_loop, daemon=True).start()
+    threading.Thread(target=_backfill_notifications_loop, daemon=True).start()
 
     app.run(host=host, port=5000, debug=False, threaded=True)
