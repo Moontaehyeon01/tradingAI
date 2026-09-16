@@ -120,6 +120,30 @@ if NOTIFICATIONS_FILE.exists():
                 pass
 
 
+def _notif_dedup_key(pair: str, when_iso: str) -> tuple:
+    # 초 단위까지만 비교한다. 실시간 웹훅 알림의 time(기록 시각)과 백필의
+    # close_date(실제 청산 시각)는 초 단위로는 사실상 같다 - 웹훅이 체결
+    # 직후 오기 때문이다.
+    return (pair, when_iso[:19])
+
+
+# backfill_notifications()의 중복판정 기준. notifications(위 deque)는 화면에
+# 보여줄 최근 200건만 들고 있는데, 이걸 그대로 dedup 기준으로 쓰면 200건보다
+# 오래돼 밀려난 알림은 다음 백필 주기(120초)마다 "새로 발견한 것"으로 착각돼
+# 텔레그램이 하루종일 반복 발송되는 버그가 있었다(실제로 겪음). 파일 전체
+# (append-only, 무제한 보관)를 기준으로 한 별도 set으로 dedup해야 한다.
+_notif_seen_keys: set = set()
+if NOTIFICATIONS_FILE.exists():
+    with open(NOTIFICATIONS_FILE, encoding="utf-8") as f:
+        for line in f:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if entry.get("pair") and entry.get("time"):
+                _notif_seen_keys.add(_notif_dedup_key(entry["pair"], entry["time"]))
+
+
 def _resort_notifications() -> None:
     """notifications는 '맨 앞 = 최신'이 불변식인데, backfill이 뒤늦게 발견한
     과거 이력을 파일 끝에 그냥 append(=다음 재시작 때 맨 앞 쪽으로 로드)해버리면
@@ -139,6 +163,8 @@ _resort_notifications()
 
 def record_notification(entry: dict):
     notifications.appendleft(entry)
+    if entry.get("pair") and entry.get("time"):
+        _notif_seen_keys.add(_notif_dedup_key(entry["pair"], entry["time"]))
     try:
         with open(NOTIFICATIONS_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -1545,13 +1571,6 @@ def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
-def _notif_dedup_key(pair: str, when_iso: str) -> tuple:
-    # 초 단위까지만 비교한다. 실시간 웹훅 알림의 time(기록 시각)과 백필의
-    # close_date(실제 청산 시각)는 초 단위로는 사실상 같다 - 웹훅이 체결
-    # 직후 오기 때문이다.
-    return (pair, when_iso[:19])
-
-
 def _send_backfill_telegram(t: dict) -> None:
     """실시간 웹훅으로는 못 받은 청산(수동 청산이 대부분 - 바이낸스에서 직접
     닫으면 freqtrade가 아예 모르는 거래라 웹훅 자체가 없다)을 나중에
@@ -1588,12 +1607,13 @@ def backfill_notifications() -> int:
     수동 청산처럼 애초에 실시간으로 안 잡히는 것들이 대상이다. pair+초 단위
     시각으로 이미 있는 알림과 겹치는지 걸러내므로, 서버를 몇 번을 재시작해도
     중복으로 쌓이지 않는다.
+
+    dedup 기준은 화면표시용 notifications(최근 200건 deque)가 아니라 파일
+    전체 기준의 _notif_seen_keys 다 - 200건 밖으로 밀려난 옛 항목을 매
+    120초마다 "새로 발견"으로 착각해 텔레그램을 하루종일 반복 발송하던
+    버그가 있었다.
     """
-    existing = {
-        _notif_dedup_key(n["pair"], n["time"])
-        for n in notifications
-        if n.get("pair") and n.get("time")
-    }
+    existing = _notif_seen_keys
 
     items = []
     for bot in BOTS:
@@ -1653,8 +1673,9 @@ def backfill_notifications() -> int:
         # 여기 들어온 건 정의상 실시간 웹훅으로 못 받은 것들이다(대부분 수동
         # 청산). dedup 덕분에 이미 알림이 있던 것들은 위 continue 에서
         # 걸러지므로, 실시간 웹훅이 이미 보낸 것과 중복 발송될 일은 없다.
+        # (record_notification이 _notif_seen_keys에 key를 바로 추가하므로
+        # 여기서 따로 existing에 넣어줄 필요는 없다.)
         _send_backfill_telegram(t)
-        existing.add(key)
         added += 1
     if added:
         # 위에서 넣은 새 항목들은 서로간엔 시간순이어도, 이미 있던 알림들
