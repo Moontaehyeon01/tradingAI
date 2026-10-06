@@ -80,7 +80,7 @@ function renderManualPositions(acct) {
       const sideCls = p.side === "short" ? "side-short" : "side-long";
       const sideTxt = p.side === "short" ? "SHORT" : "LONG";
       return `
-        <tr>
+        <tr class="chart-row" data-chart-base="${p.base}" title="누르면 오른쪽에 ${p.base} 차트">
           <td class="pair-cell">${p.base}</td>
           <td><span class="side-pill ${sideCls}">${sideTxt}</span></td>
           <td>${p.leverage}x</td>
@@ -130,7 +130,7 @@ function orderRow(o, isSub) {
   const filledTxt =
     o.filled > 0 ? `${acctNum(o.filled)} / ${acctNum(o.qty)}` : "0";
   return `
-    <tr class="${isSub ? "ord-sub" : ""}">
+    <tr class="chart-row ${isSub ? "ord-sub" : ""}" data-chart-base="${o.base}" title="누르면 오른쪽에 ${o.base} 차트">
       <td class="pair-cell">${isSub ? "" : o.base}</td>
       <td><span class="${sideCls}">${sideTxt}</span> · ${o.type_ko}${
         o.reduce_only ? ' <span class="ord-tag">청산전용</span>' : ""
@@ -154,7 +154,7 @@ function groupRow(g) {
   const qty = g.items.reduce((a, x) => a + (x.qty - x.filled), 0);
   const oldest = Math.min(...g.items.map((x) => x.time).filter(Boolean));
   return `
-    <tr class="ord-group" data-key="${g.key}">
+    <tr class="ord-group chart-row" data-key="${g.key}" data-chart-base="${o.base}" title="누르면 펼쳐지고 오른쪽에 ${o.base} 차트">
       <td class="pair-cell">
         <span class="ord-caret">${open ? "▾" : "▸"}</span> ${o.base}
       </td>

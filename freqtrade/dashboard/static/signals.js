@@ -16,6 +16,9 @@
    ========================================================================== */
 
 const SIGNAL_REFRESH_MS = 30000;
+// 진입 조건 현황 탭: 선택된 봇(kind|bot 키)과 마지막 응답(탭 클릭 시 다시 그리기용)
+let selectedSignalKey = null;
+let lastSignalList = null;
 
 function sigFmt(v) {
   if (v === null || v === undefined) return "–";
@@ -53,7 +56,7 @@ function renderBoxGroup(items) {
       const distCls = ok && near < 0.5 ? "warn" : "";
 
       return `
-        <tr>
+        <tr class="chart-row" data-chart-base="${sym}" title="누르면 오른쪽에 ${sym} 차트">
           <td class="pair-cell">${sym}</td>
           <td>${sigFmt(s.box_low)} ~ ${sigFmt(s.box_high)}</td>
           <td class="${ok ? "pos" : "neg"}">${widthPct.toFixed(2)}%
@@ -84,8 +87,10 @@ function renderBoxGroup(items) {
 /* ---------------- 횡단면 모멘텀 ---------------- */
 
 function renderXsectGroup(items) {
-  // 수익률 높은 순으로 - 위가 롱 후보, 아래가 숏 후보
-  const sorted = [...items].sort((a, b) => b.ret - a.ret);
+  // 순위 점수 높은 순으로 - 위가 롱 후보, 아래가 숏 후보.
+  // 점수는 봇마다 다르다: 기본은 14일 수익률, RSI 봇은 RSI(14) (score_kind).
+  const isRsi = items[0]?.score_kind === "rsi";
+  const sorted = [...items].sort((a, b) => (b.score ?? b.ret) - (a.score ?? a.ret));
 
   const rows = sorted
     .map((s) => {
@@ -94,12 +99,22 @@ function renderXsectGroup(items) {
       if (s.status === "long") status = '<span class="sig-badge go">롱 후보</span>';
       else if (s.status === "short") status = '<span class="sig-badge go short">숏 후보</span>';
       else status = '<span class="sig-badge wait">순위 밖</span>';
+      // 순위로는 후보지만 청산 후 재진입 대기 중이라 건너뛴 종목 - 다음 순위가 대신 후보가 된다
+      if (s.lock_until) {
+        const d = new Date(s.lock_until);
+        const until = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+        status = `<span class="sig-badge wait">재진입 대기 ~${until}</span>`;
+      } else if (s.foreign && s.status === "wait") {
+        // 계좌에 다른 봇/수동 포지션이 있어 건너뛴 종목 (RSI 봇) - 다음 순위가 대신 후보
+        status = '<span class="sig-badge wait">다른 포지션 보유 중</span>';
+      }
       const retCls = s.ret > 0 ? "pos" : s.ret < 0 ? "neg" : "";
 
       return `
-        <tr>
+        <tr class="chart-row" data-chart-base="${sym}" title="누르면 오른쪽에 ${sym} 차트">
           <td class="pair-cell">${sym}</td>
           <td>${s.rank} / ${s.total}</td>
+          ${isRsi ? `<td>${s.score.toFixed(1)}</td>` : ""}
           <td class="${retCls}">${(s.ret * 100).toFixed(2)}%</td>
           <td>${sigFmt(s.close)}</td>
           <td>${status}</td>
@@ -109,23 +124,29 @@ function renderXsectGroup(items) {
 
   const longs = items.filter((s) => s.status === "long").length;
   const shorts = items.filter((s) => s.status === "short").length;
+  const scoreName = isRsi ? "RSI(14)" : "14일 수익률";
   const note =
-    `${items[0]?.bot_name ?? "XSectMomentum"}: 감시 페어 ${items.length}개 중 ` +
+    `${items[0]?.bot_name ?? "Momentum"}${items[0]?.stopped ? " [정지 중 · 켜면 이 순위로 진입]" : ""}: ` +
+    `${scoreName} 기준 감시 페어 ${items.length}개 중 ` +
     `상위 ${longs}개 롱 후보, 하위 ${shorts}개 숏 후보 (다음 일봉 마감 시 리밸런싱)`;
+  const caption = `<div class="panel-sub" style="margin:8px 0 4px">${note}</div>`;
 
-  const table = `
+  const table = `${caption}
     <table class="history-table">
       <thead>
-        <tr><th>페어</th><th>순위</th><th>수익률</th><th>현재가</th><th>상태</th></tr>
+        <tr><th>페어</th><th>순위</th>${isRsi ? "<th>RSI(14)</th>" : ""}<th>14일 수익률</th><th>현재가</th><th>상태</th></tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>`;
-  return { table, note };
+  // 상단 요약(접혔을 때 보이는 줄)은 짧게 - 자세한 설명은 표 위 캡션에 있다
+  const shortNote = `${items[0]?.bot_name ?? "Momentum"}${items[0]?.stopped ? " (정지 중)" : ""}`;
+  return { table, note: shortNote };
 }
 
 /* ---------------- 조립 ---------------- */
 
 function renderSignals(list) {
+  lastSignalList = list;
   const container = document.getElementById("signalGroups");
   const note = document.getElementById("signalNote");
   if (!container) return;
@@ -149,18 +170,56 @@ function renderSignals(list) {
     groups.get(key).push(s);
   }
 
+  // 봇이 여러 개면 표를 세로로 다 늘어놓지 않고 탭으로 하나씩 보여준다.
+  // 선택은 기억해 두고(새로고침 후에도), 없으면 가동 중인 봇을 먼저 보여준다.
+  const keys = [...groups.keys()];
+  if (!groups.has(selectedSignalKey)) {
+    const saved = loadSignalTab();
+    selectedSignalKey = groups.has(saved)
+      ? saved
+      : keys.find((k) => !groups.get(k)[0].stopped) ?? keys[0];
+  }
+
   const notes = [];
+  let tabs = "";
   let html = "";
-  for (const items of groups.values()) {
+  for (const [key, items] of groups) {
     const { table, note: groupNote } =
       items[0].kind === "xsect_momentum" ? renderXsectGroup(items) : renderBoxGroup(items);
     notes.push(groupNote);
-    html += `<div class="table-scroll">${table}</div>`;
+    const active = key === selectedSignalKey ? "active" : "";
+    const dot = items[0].stopped ? "err" : "ok";
+    tabs += `<button type="button" class="bot-tab sig-tab ${active}" data-sig="${key}">
+        <span class="dot ${dot}"></span>${items[0].bot_name}${items[0].stopped ? " · 정지" : ""}
+      </button>`;
+    if (key === selectedSignalKey) html = `<div class="table-scroll">${table}</div>`;
   }
+  if (keys.length > 1) html = `<div class="bot-title-tabs sig-tabs">${tabs}</div>` + html;
 
   setHTMLIfChanged(container, html);
   if (note) note.textContent = notes.join("  ·  ");
 }
+
+
+function loadSignalTab() {
+  try {
+    return localStorage.getItem("signalTab");
+  } catch {
+    return null;
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const tab = e.target.closest(".sig-tab");
+  if (!tab || tab.dataset.sig === selectedSignalKey) return;
+  selectedSignalKey = tab.dataset.sig;
+  try {
+    localStorage.setItem("signalTab", selectedSignalKey);
+  } catch {
+    /* 저장 안 돼도 이번 화면에선 동작 */
+  }
+  renderSignals(lastSignalList);
+});
 
 async function refreshSignals() {
   try {

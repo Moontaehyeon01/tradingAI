@@ -3,7 +3,7 @@
     "stake_currency": "USDT",
     "stake_amount": "unlimited",
     "tradable_balance_ratio": 1.0,
-    "fiat_display_currency": "USD",
+    "fiat_display_currency": "",
     "timeframe": "1d",
     "dry_run": false,
     "dry_run_wallet": 1000,
@@ -105,33 +105,35 @@
         "format": "json",
         "entry_fill": {
             "event": "entry_fill",
-            "bot_name": "횡단면모멘텀",
+            "bot_name": "Momentum (횡단면 모멘텀)",
             "pair": "{pair}",
-            "direction": "{direction}"
+            "direction": "{direction}",
+            "open_date": "{open_date}"
         },
         "exit_fill": {
             "event": "exit_fill",
-            "bot_name": "횡단면모멘텀",
+            "bot_name": "Momentum (횡단면 모멘텀)",
             "pair": "{pair}",
             "direction": "{direction}",
             "profit_ratio": "{profit_ratio}",
             "profit_amount": "{profit_amount}",
             "stake_currency": "{stake_currency}",
-            "exit_reason": "{exit_reason}"
+            "exit_reason": "{exit_reason}",
+            "close_date": "{close_date}"
         },
         "status": {
             "event": "status",
-            "bot_name": "횡단면모멘텀",
+            "bot_name": "Momentum (횡단면 모멘텀)",
             "status": "{status}"
         },
         "warning": {
             "event": "warning",
-            "bot_name": "횡단면모멘텀",
+            "bot_name": "Momentum (횡단면 모멘텀)",
             "status": "{status}"
         },
         "startup": {
             "event": "startup",
-            "bot_name": "횡단면모멘텀",
+            "bot_name": "Momentum (횡단면 모멘텀)",
             "status": "{status}"
         }
     },

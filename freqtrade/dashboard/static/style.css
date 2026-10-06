@@ -126,71 +126,161 @@ body {
   overflow: hidden;
 }
 
-/* ===== 왼쪽 뉴스 패널 (사이드바가 상단으로 옮겨가며 비게 된 자리) =====
-   news.js 가 /api/news 를 폴링해서 채운다 - 여러 매체 RSS를 서버가 모아
-   제목 유사도로 중복 제거하고, 한글로 번역해서 내려준다. */
-.news-panel {
-  width: 300px;
-  flex-shrink: 0;
-  background: var(--panel-alt);
-  border-right: 1px solid var(--border);
-  padding: 18px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  overflow-y: auto;
-}
-.news-panel-title { font-size: 13px; color: var(--text); }
-.news-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.news-item {
-  display: block;
-  padding: 10px 11px;
-  border-radius: var(--radius-sm);
-  background: var(--card);
-  border: 1px solid var(--border);
-  text-decoration: none;
-  color: inherit;
-}
-.news-item:hover { background: var(--card-hover); border-color: var(--blue); }
-.news-item-title {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text);
-  line-height: 1.4;
-  margin-bottom: 4px;
-}
-.news-item-summary {
-  font-size: 11px;
-  color: var(--text-dim);
-  line-height: 1.45;
-  margin-bottom: 6px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.news-item-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10.5px;
-  color: var(--text-faint);
-}
-.news-item-source { color: var(--blue); font-weight: 600; }
-
-/* 사이드 패널까지 넉넉히 들어갈 폭이 안 되면 둘 다 통째로 숨긴다 -
-   어중간하게 찌그러뜨리는 것보다, 뉴스/차트 없는 중앙 레이아웃을 온전히
-   지키는 쪽을 택한다. */
-@media (max-width: 1700px) {
-  .side-panel,
-  .news-panel {
+/* 오른쪽 차트까지 넉넉히 들어갈 폭이 안 되면 통째로 숨긴다 - 어중간하게
+   찌그러뜨리는 것보다 중앙 레이아웃을 온전히 지키는 쪽을 택한다. 왼쪽 뉴스
+   패널(300px)을 없애면서(2026-10-06) 숨기는 기준폭을 1700 -> 1400 으로 낮췄다. */
+@media (max-width: 1400px) {
+  .side-panel {
     display: none;
   }
+  /* 숨겨진 상태에서 보유 종목을 누르면 차트 패널을 전체 화면으로 띄운다 */
+  body.coin-chart-mode .side-panel {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    z-index: 300;
+    width: auto;
+    background: var(--panel);
+    border-left: none;
+  }
+  body.coin-chart-mode .tv-chart-tall { height: calc(100vh - 110px); }
 }
+
+/* ===== 보유 종목 -> 차트 연동 ===== */
+.chart-row { cursor: pointer; }
+.default-charts { display: flex; flex-direction: column; gap: 14px; }
+.default-charts[hidden], .coin-chart-card[hidden] { display: none; }
+.coin-chart-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.coin-chart-head .side-panel-title { font-size: 13px; color: var(--text); }
+.coin-chart-back {
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.coin-chart-back:hover { border-color: var(--blue); background: var(--card-hover); }
+.tv-chart-tall { height: 660px; }
+
+/* ===== 주요 뉴스 한 줄 (headlines.js) ===== */
+.headline-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 8px 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
+  min-width: 0;
+}
+.hl-label {
+  flex-shrink: 0;
+  font-weight: 700;
+  font-size: 11.5px;
+  color: var(--orange);
+  background: rgba(245, 158, 11, 0.14);
+  padding: 3px 9px;
+  border-radius: 20px;
+}
+.hl-empty { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hl-item {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  text-decoration: none;
+}
+.headline-wrap { display: flex; flex-direction: column; gap: 6px; }
+.headline-bar { cursor: pointer; user-select: none; }
+.headline-bar:hover { border-color: rgba(91, 141, 239, 0.5); }
+.hl-text {
+  font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  color: var(--text); text-decoration: none; cursor: pointer;
+}
+.hl-text:hover { text-decoration: underline; color: #fff; }
+.hl-caret { flex-shrink: 0; color: var(--text-dim); font-size: 12px; padding: 0 2px; }
+.headline-list {
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 6px 8px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.headline-list[hidden] { display: none; }
+.hl-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.hl-row:last-child { border-bottom: none; }
+.hl-row .hl-cat { margin-top: 1px; }
+.hl-row-body { flex: 1; min-width: 0; }
+.hl-row-title { color: var(--text); font-weight: 600; text-decoration: none; }
+.hl-row-title:hover { text-decoration: underline; }
+.hl-row-impact { margin-top: 3px; color: var(--text-dim); font-size: 11.5px; line-height: 1.45; }
+.hl-meta { flex-shrink: 0; color: var(--text-faint); font-size: 11px; }
+.hl-cat {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 6px;
+  color: var(--blue);
+  background: rgba(91, 141, 239, 0.14);
+}
+.hl-cat.hl-lvl5 { color: var(--red); background: var(--red-bg); }
+.hl-nav { flex-shrink: 0; display: flex; align-items: center; gap: 4px; color: var(--text-faint); font-size: 11px; }
+.hl-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 6px;
+  width: 22px;
+  height: 22px;
+  cursor: pointer;
+  line-height: 1;
+}
+.hl-btn:hover { color: var(--text); border-color: var(--blue); }
+@media (max-width: 640px) {
+  .hl-meta { display: none; }
+}
+
+/* AI 시황 위 "주요 이벤트" 목록 */
+.ai-events {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.ai-events-head { font-size: 13px; font-weight: 700; color: var(--text); }
+.ai-event {
+  display: block;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: inherit;
+  text-decoration: none;
+}
+.ai-event:hover { border-color: var(--blue); background: var(--card-hover); }
+.ai-event-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ai-event-title { font-weight: 600; font-size: 13px; color: var(--text); }
+.ai-event-meta { font-size: 11px; color: var(--text-faint); }
+.ai-event-impact { margin-top: 4px; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
 
 /* ===== Sidebar ===== */
 
@@ -636,6 +726,8 @@ body {
    따로 탭바를 두는 대신, 카드 헤더의 봇 이름 자리를 그대로 탭으로 쓴다.
    눌린 봇 하나만 카드 나머지 내용을 채운다. */
 .bot-title-tabs { display: flex; gap: 2px; }
+/* 진입 조건 현황의 봇 탭 - 봇 카드 탭과 같은 모양, 표 위에 한 줄 */
+.sig-tabs { flex-wrap: wrap; margin: 4px 0 6px; }
 .bot-tab {
   display: flex;
   align-items: center;
@@ -741,14 +833,55 @@ table.pos-table { width: 100%; border-collapse: collapse; }
   font-weight: 600;
   margin-bottom: 16px;
 }
-.ai-summary {
+/* 접었을 때는 기존과 똑같은 카드 크기 - 클릭하면 .ai-detail 이 펼쳐지는
+   방식이라 버튼 리셋 스타일이 필요하다(네이티브 버튼 여백/테두리 제거). */
+.ai-expand-toggle {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ai-summary-toggle {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 16px;
+  margin-bottom: 8px;
+}
+.ai-summary {
   font-size: 13px;
   line-height: 1.6;
   color: var(--text);
+}
+.ai-expand-hint {
+  margin-top: 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--blue);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ai-expand-arrow { display: inline-block; transition: transform 0.15s ease; }
+.ai-expand-toggle.expanded .ai-expand-arrow { transform: rotate(180deg); }
+.ai-detail {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-dim);
+}
+.ai-detail p { margin: 0 0 10px; }
+.ai-detail p:last-child { margin-bottom: 0; }
+.ai-market-report {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
   margin-bottom: 16px;
 }
 .ai-coin-grid {
@@ -763,6 +896,7 @@ table.pos-table { width: 100%; border-collapse: collapse; }
   border-radius: var(--radius-md);
   padding: 14px;
 }
+.ai-coin-card .ai-detail { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
 .ai-coin-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .ai-coin-symbol { font-weight: 700; font-size: 14px; }
 .ai-view-pill {
@@ -775,6 +909,37 @@ table.pos-table { width: 100%; border-collapse: collapse; }
 .ai-reasoning { font-size: 12px; color: var(--text-dim); line-height: 1.5; }
 .ai-caveat { font-size: 11px; color: var(--text-faint); font-style: italic; margin-bottom: 10px; }
 .ai-meta { font-size: 10.5px; color: var(--text-faint); text-align: right; }
+
+/* AI 예측 성적표 */
+.ai-score {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+.ai-score-head { font-weight: 700; font-size: 13px; margin-bottom: 10px; }
+.ai-score-sub { font-weight: 500; font-size: 10.5px; color: var(--text-faint); margin-left: 6px; }
+.ai-score-warn {
+  font-size: 11.5px; color: var(--orange);
+  background: rgba(245, 158, 11, 0.10);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px; margin-bottom: 8px; line-height: 1.5;
+}
+.ai-score-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px; margin-bottom: 10px;
+}
+.ai-score-item .lbl { font-size: 10.5px; color: var(--text-faint); margin-bottom: 3px; }
+.ai-score-item .val { font-size: 16px; font-weight: 700; }
+.ai-score-item .val small { font-size: 10.5px; font-weight: 500; color: var(--text-faint); }
+.ai-score-empty { grid-column: 1 / -1; font-size: 12px; color: var(--text-dim); }
+.ai-score-model { font-size: 10.5px; color: var(--text-faint); line-height: 1.5; margin-bottom: 8px; }
+.ai-score-table-wrap { overflow-x: auto; }
+.ai-score-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.ai-score-table th { text-align: left; color: var(--text-faint); font-weight: 600; padding: 4px 6px; }
+.ai-score-table td { padding: 4px 6px; border-top: 1px solid var(--border); white-space: nowrap; }
 
 /* Alerts feed */
 .alert-item {

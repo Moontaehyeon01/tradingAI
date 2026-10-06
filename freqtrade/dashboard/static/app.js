@@ -11,7 +11,7 @@ let equityChart = null;
 let sideDonut = null;
 let lastSummary = null;
 // 봇 두 개를 좌우로 나눠 보여주면 표가 좁아져서 탭으로 하나씩 전체 폭으로
-// 보여준다. 기본값은 지금 실제로 굴리는 XSectMomentum.
+// 보여준다. 기본값은 처음 굴리던 Momentum.
 let selectedBotId = "xsectmomentum";
 let lastSeenAlertTime = null; // 새로 도착한 알림만 구분해서 소리 재생하기 위한 기준점
 let audioCtx = null;
@@ -147,7 +147,7 @@ function renderTickers(tickers) {
       const color = COIN_COLORS[symbol] || "#5b8def";
       const cls = pnlClass(t.change_pct);
       return `
-        <tr>
+        <tr class="chart-row" data-chart-base="${symbol}" title="누르면 오른쪽에 ${symbol} 차트">
           <td>
             <div class="coin-cell">
               <div class="coin-badge" style="background:${color}">${symbol.slice(0, 1)}</div>
@@ -488,15 +488,19 @@ function renderOpenTrades(trades, botId) {
       const slD = dist(sl);
       const tpD = dist(tp);
       const rem = t.hold_remaining_h;
-      const remTxt =
+      const remBase =
         rem === null || rem === undefined
           ? "–"
           : rem >= 1
           ? `${Math.floor(rem)}시간`
           : `${Math.round(rem * 60)}분`;
+      // 3일이 지나 순위 유지로 하루 연장 중이면 4일 상한까지 남은 시간
+      const remTxt = t.hold_extended ? `연장 · ${remBase}` : remBase;
       const remCls = rem !== null && rem !== undefined && rem < 6 ? "warn" : "";
+      // 줄을 누르면 오른쪽 차트가 이 코인으로 바뀐다 (charts.js)
+      const chartBase = t.pair.split("/")[0];
       return `
-        <tr>
+        <tr class="chart-row" data-chart-base="${chartBase}" title="누르면 오른쪽에 ${chartBase} 차트">
           <td class="pair-cell">${fmtPair(t.pair)}<span class="lvl-d">${t.leverage}x</span></td>
           <td><span class="side-pill ${sideClass}">${sideLabel}</span></td>
           <td>${fmtNum(t.open_rate)}</td>
@@ -627,7 +631,8 @@ function renderBotTitleTabs(bots, selectedBotId) {
   return `<div class="bot-title-tabs">${bots
     .map((b) => {
       const active = b.id === selectedBotId ? "active" : "";
-      const dotCls = !b.connected ? "err" : "ok";
+      // 초록 = 연결됐고 가동 중, 빨강 = 정지 중이거나 연결 안 됨 (정지된 봇이 초록이라 헷갈렸음)
+      const dotCls = b.connected && b.state === "running" ? "ok" : "err";
       return `<button type="button" class="bot-tab ${active}" data-bot="${b.id}">
         <span class="dot ${dotCls}"></span>${b.name}
       </button>`;
@@ -718,8 +723,9 @@ function renderHistory(summary) {
       else if (t.is_short === false) sidePill = `<span class="side-pill side-long">LONG</span>`;
       else sidePill = `<span class="neutral">–</span>`;
       const strategyCls = t.manual ? "ord-owner manual" : "neutral";
+      const chartBase = t.pair.split("/")[0];
       return `
-        <tr>
+        <tr class="chart-row" data-chart-base="${chartBase}" title="누르면 오른쪽에 ${chartBase} 차트">
           <td><span class="${strategyCls}">${t.strategy}</span></td>
           <td class="pair-cell">${fmtPair(t.pair)}</td>
           <td>${sidePill}</td>
