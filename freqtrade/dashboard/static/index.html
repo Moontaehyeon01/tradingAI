@@ -72,27 +72,25 @@
     </div>
   </header>
 
-  <!-- 사이드바가 있던 왼쪽 자리는 이제 코인 뉴스가 채운다 (아래 news-panel).
-       상단 nav + (뉴스패널 / 메인 / 우측 차트패널) 이렇게 세로 2단 구조가 됐다. -->
+  <!-- 상단 nav + (메인 / 우측 차트패널) 세로 2단 구조.
+       왼쪽 코인 뉴스 목록은 2026-10-06 없앴다 - 대신 메인 맨 위 "주요 뉴스" 한 줄과
+       AI 시황의 "주요 이벤트"로 영향이 큰 뉴스만 보여준다(headlines.js). -->
   <div class="shell-body">
-
-  <!-- ===== 코인 뉴스 (왼쪽) =====
-       여러 매체(코인데스크·코인텔레그래프·디크립트 등)의 RSS를 서버가 모아
-       제목 유사도로 중복만 걸러서 준다. 제목/요약은 서버가 미리 한글로
-       번역해서 내려주고(뉴스 자체가 자주 안 바뀌니 캐시), 클릭하면 원문
-       기사로 새 탭이 열린다. -->
-  <aside class="news-panel">
-    <div class="side-panel-title news-panel-title">코인 뉴스</div>
-    <div class="news-list" id="newsList">
-      <div class="empty-row">뉴스를 불러오는 중…</div>
-    </div>
-  </aside>
 
   <!-- ===== Main ===== -->
   <div class="main">
 
 
     <section class="content">
+
+      <!-- 주요 뉴스 한 줄 (코인/미국증시에 영향이 큰 뉴스만, 여러 건이면 돌아가며) -->
+      <!-- 뉴스 글씨를 누르면 원문, 그 외 영역을 누르면 아래로 전체 목록이 펼쳐진다 -->
+      <div class="headline-wrap">
+        <div class="headline-bar" id="headlineBar">
+          <span class="hl-label">주요 뉴스</span><span class="hl-empty">불러오는 중…</span>
+        </div>
+        <div class="headline-list" id="headlineList" hidden></div>
+      </div>
 
       <section id="section-overview" class="stat-grid">
         <div class="stat-card">
@@ -152,7 +150,7 @@
       <section id="section-positions">
         <!-- 봇 두 개를 좌우로 나눠 보여주면 표가 좁아져서(배율/청산까지 컬럼이
              세로로 쪼개져 보일 정도로) 카드 헤더의 봇 이름 자체를 탭으로 만들어
-             한 봇씩 전체 폭으로 보여준다. 기본은 XSectMomentum(지금 실제로
+             한 봇씩 전체 폭으로 보여준다. 기본은 Momentum(지금 실제로
              굴리는 쪽) - renderPositions()가 채운다. -->
         <div class="bot-grid" id="botGrid">
           <!-- 봇 탭 + 선택된 봇 카드가 JS로 렌더링됨 -->
@@ -215,8 +213,8 @@
           <span class="panel-caret">▾</span>
         </div>
         <!-- 봇마다 진입 조건의 성격이 달라(박스 돌파 vs 순위 기반 롱숏) 표 구조 자체가
-             다르다. 정지된 봇은 signals.js가 서버 응답에서 아예 안 보내주므로
-             화면에서 자동으로 빠진다 - 이 컨테이너는 signals.js가 통째로 채운다. -->
+             다르다. 정지된 박스형 봇은 서버가 아예 안 보내주고(순위형은 "정지"로 표시),
+             봇이 여럿이면 탭으로 하나씩 보여준다 - 이 컨테이너는 signals.js가 통째로 채운다. -->
         <div id="signalGroups">
           <div class="table-scroll">
             <table class="history-table">
@@ -299,9 +297,10 @@
         <div class="panel-head">
           <div>
             <div class="panel-title">AI 시황 의견 <span class="panel-title-en">· Reference only</span></div>
-            <div class="panel-sub">참고용 의견입니다 · 자동매매에 연결되어 있지 않습니다 · 30분마다 갱신</div>
+            <div class="panel-sub">참고용 의견입니다 · 자동매매에 연결되어 있지 않습니다 · 30분마다, 큰 뉴스가 나오면 바로 갱신</div>
           </div>
         </div>
+        <div id="aiEvents"></div>
         <div id="aiOpinionBody">
           <div class="empty-row">불러오는 중…</div>
         </div>
@@ -321,8 +320,17 @@
        이 프로젝트가 만든 데이터가 아니라 TradingView 무료 위젯(외부 iframe/
        스크립트 임베드)이라 로그인·봇 상태와는 무관하게 항상 그대로 보여준다.
        좁은 화면(아래 미디어쿼리)에서는 컬럼이 무리라 통째로 숨긴다.
-       뉴스는 왼쪽 news-panel로 옮겨서 여기엔 차트 둘만 남는다. -->
+       보유 종목 줄을 누르면 그 코인 차트로 바뀐다(charts.js) - 좁은 화면에선
+       이 패널이 전체 화면으로 떠서 보여준다. -->
   <aside class="side-panel">
+    <div class="side-panel-card coin-chart-card" id="coinChartCard" hidden>
+      <div class="coin-chart-head">
+        <div class="side-panel-title" id="coinChartTitle">–</div>
+        <button type="button" class="coin-chart-back" id="coinChartBack">← BTC · QQQ 차트로</button>
+      </div>
+      <div class="tv-chart tv-chart-tall" id="tvChartCoin"></div>
+    </div>
+    <div id="defaultCharts" class="default-charts">
     <div class="side-panel-card">
       <div class="side-panel-title">BTC/USDT · 무기한선물</div>
       <div class="tv-chart" id="tvChartBtc"></div>
@@ -333,6 +341,7 @@
            심볼로 처리됨 - 확인 후 이 형태로 확정). -->
       <div class="side-panel-title">QQQ/USDT · 무기한선물</div>
       <div class="tv-chart" id="tvChartQqq"></div>
+    </div>
     </div>
   </aside>
 
@@ -357,32 +366,11 @@
 <script src="app.js"></script>
 <script src="signals.js"></script>
 <script src="account.js"></script>
-<script src="news.js"></script>
+<script src="headlines.js"></script>
 <script src="ai.js"></script>
 
-<!-- 오른쪽 사이드 패널의 BTC/QQQ 차트. tv.js 는 한 번만 로드하고 위젯을
-     두 번 생성한다. autosize 로 컨테이너(.tv-chart, CSS에서 고정 높이)
-     크기를 그대로 따라간다. -->
+<!-- 오른쪽 차트: tv.js 를 먼저 불러온 뒤 charts.js 가 위젯을 만든다. -->
 <script src="https://s3.tradingview.com/tv.js"></script>
-<script>
-  if (window.TradingView) {
-    const tvCommon = {
-      autosize: true,
-      interval: "1",
-      timezone: "Asia/Seoul",
-      theme: "dark",
-      style: "1",
-      locale: "kr",
-      toolbar_bg: "#14161d",
-      hide_top_toolbar: true,
-      hide_legend: false,
-      save_image: false,
-      backgroundColor: "#14161d",
-      gridColor: "rgba(255,255,255,0.06)",
-    };
-    new TradingView.widget({ ...tvCommon, symbol: "BINANCE:BTCUSDT.P", container_id: "tvChartBtc" });
-    new TradingView.widget({ ...tvCommon, symbol: "BINANCE:QQQUSDT.P", container_id: "tvChartQqq" });
-  }
-</script>
+<script src="charts.js"></script>
 </body>
 </html>

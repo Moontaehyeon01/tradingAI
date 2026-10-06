@@ -12,7 +12,7 @@
     # 에서 표시 레이어로만 처리한다. 여기 값은 항상 정상적인 사이징 값(신규
     # 진입 시 실제로 쓰고 싶은 비율)으로 유지할 것.
     "tradable_balance_ratio": 0.5,
-    "fiat_display_currency": "USD",
+    "fiat_display_currency": "",
     "timeframe": "1h",
     "dry_run": false,
     "dry_run_wallet": 1000,
@@ -93,33 +93,35 @@
         "format": "json",
         "entry_fill": {
             "event": "entry_fill",
-            "bot_name": "박스돌파V2",
+            "bot_name": "BoxBreakoutV2 (박스돌파 V2)",
             "pair": "{pair}",
-            "direction": "{direction}"
+            "direction": "{direction}",
+            "open_date": "{open_date}"
         },
         "exit_fill": {
             "event": "exit_fill",
-            "bot_name": "박스돌파V2",
+            "bot_name": "BoxBreakoutV2 (박스돌파 V2)",
             "pair": "{pair}",
             "direction": "{direction}",
             "profit_ratio": "{profit_ratio}",
             "profit_amount": "{profit_amount}",
             "stake_currency": "{stake_currency}",
-            "exit_reason": "{exit_reason}"
+            "exit_reason": "{exit_reason}",
+            "close_date": "{close_date}"
         },
         "status": {
             "event": "status",
-            "bot_name": "박스돌파V2",
+            "bot_name": "BoxBreakoutV2 (박스돌파 V2)",
             "status": "{status}"
         },
         "warning": {
             "event": "warning",
-            "bot_name": "박스돌파V2",
+            "bot_name": "BoxBreakoutV2 (박스돌파 V2)",
             "status": "{status}"
         },
         "startup": {
             "event": "startup",
-            "bot_name": "박스돌파V2",
+            "bot_name": "BoxBreakoutV2 (박스돌파 V2)",
             "status": "{status}"
         }
     },

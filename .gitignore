@@ -28,3 +28,9 @@ freqtrade/walk_forward_results_*_xrp_only.csv
 
 # 신호 알림 중복방지 상태 (로컬 전용)
 tools/.signal_alert_state.json
+
+# 대시보드 런타임 데이터 (서버에서 생성)
+freqtrade/dashboard/predictor_state.json
+freqtrade/dashboard/predictions.jsonl
+freqtrade/dashboard/news_scores.json
+freqtrade/dashboard/major_news.json

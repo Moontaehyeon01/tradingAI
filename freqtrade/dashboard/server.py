@@ -32,6 +32,8 @@ import requests
 from flask import Flask, jsonify, request, Response, send_from_directory
 from dotenv import load_dotenv
 
+import predictor
+
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT.parent.parent / ".env")
 
@@ -79,10 +81,20 @@ BOTS = [
     # signal_kind: 진입 조건 현황 패널이 봇마다 다른 방식으로 그려야 해서 붙인
     # 태그다. "box"는 박스권 돌파(박스 범위/폭/돌파까지 거리), "xsect_momentum"은
     # 순위 기반(전체 페어 수익률 순위/롱·숏 후보) - 컬럼 구성 자체가 다르다.
-    {"id": "boxbreakoutv2", "name": "BoxBreakoutV2 (박스돌파 V2)",
-     "url": "http://127.0.0.1:8086", "leverage": 3,
-     "max_hold_h": 120, "box_max_width": 0.04, "signal_kind": "box"},
-    {"id": "xsectmomentum", "name": "XSectMomentum (횡단면 모멘텀)",
+    # XSectMomentum 과 같은 규칙에 순위만 RSI(14) (XSectRsiStrategy). 2026-10-06
+    # 박스돌파 V2 자리(8086)를 대신함. rank_score 로 진입조건 패널의 순위 계산을 바꾼다.
+    {"id": "xsectrsi", "name": "RSI (RSI 순위)",
+     "url": "http://127.0.0.1:8086", "leverage": 2,
+     "max_hold_h": 72, "signal_kind": "xsect_momentum",
+     "timeframe": "1d", "lookback": 14, "top_k": 3,
+     "rank_score": "rsi", "rsi_period": 14,
+     # 계좌에 다른 봇/수동 포지션이 있는 종목은 건너뜀(전략 _foreign_pairs) -
+     # 진입조건 패널도 같은 종목을 건너뛰고 다음 순위를 후보로 표시한다.
+     "skip_foreign_positions": True,
+     "take_profit_vol_scaled": True,
+     "hold_extends_if_ranked": True, "max_hold_hard_h": 96,
+     "reentry_cooldown_h": 48},
+    {"id": "xsectmomentum", "name": "Momentum (횡단면 모멘텀)",
      "url": "http://127.0.0.1:8087", "leverage": 2,
      "max_hold_h": 72, "signal_kind": "xsect_momentum",
      "timeframe": "1d", "lookback": 14, "top_k": 3,
@@ -91,7 +103,16 @@ BOTS = [
      # 못 한다 - exit_targets() 가 이 플래그를 보고 _xsect_vol_scaled_tp() 로
      # 종목별로 직접 계산한다. 전략의 저 네 파라미터를 바꾸면 아래 함수의
      # 같은 이름 상수도 같이 맞출 것.
-     "take_profit_vol_scaled": True},
+     "take_profit_vol_scaled": True,
+     # 보유기간(max_hold_h)이 지나도 그날 같은 방향 순위권이면 하루 더 보유하고
+     # max_hold_hard_h 에는 무조건 청산한다(전략 hold_days/max_hold_days).
+     # exit_targets() 가 연장 중이면 상한까지 남은 시간을 따로 표시한다.
+     "hold_extends_if_ranked": True, "max_hold_hard_h": 96,
+     # 전략 reentry_cooldown_hours 와 같은 값 - 진입조건 패널이 재진입 대기 종목을
+     # 건너뛰고 다음 순위를 후보로 표시하는 데 쓴다.
+     "reentry_cooldown_h": 48},
+    # 박스돌파 V2(8086)는 2026-10-06 XSectRSI 로 교체하며 없앰(실거래 10건, -8.99 USDT,
+    # DB user_data/boxbreakout_v2_live.sqlite 는 서버에 남겨둠).
     # v1은 2026-08-28 격자탐색 결과 v2 조합(박스12봉/폭4%/익절35%/48h)이 학습·홀드아웃
     # 양쪽에서 더 나아서 중단함. 되살리려면 아래 줄과 docker compose 서비스를 함께.
     # {"id": "boxbreakout", "name": "BoxBreakoutStrategy (박스돌파)", "url": "http://127.0.0.1:8085", "leverage": 5},
@@ -121,10 +142,63 @@ if NOTIFICATIONS_FILE.exists():
 
 
 def _notif_dedup_key(pair: str, when_iso: str) -> tuple:
-    # 초 단위까지만 비교한다. 실시간 웹훅 알림의 time(기록 시각)과 백필의
-    # close_date(실제 청산 시각)는 초 단위로는 사실상 같다 - 웹훅이 체결
-    # 직후 오기 때문이다.
-    return (pair, when_iso[:19])
+    # 초 단위까지만 비교한다. 웹훅 알림과 backfill_notifications()이 같은
+    # 거래를 실제 체결시각(open_date/close_date) 기준으로 기록해야 이 키가
+    # 맞아떨어진다 - 예전엔 웹훅 쪽이 "수신 시각"(now())을 썼는데, 그러면
+    # 수신 지연 1~2초만으로도 여기서 어긋나 같은 거래 알림이 두 번(게다가
+    # config의 bot_name과 대시보드 표시 이름이 서로 달라 마치 다른 봇인
+    # 것처럼) 나갔다.
+    #
+    # 2026-09-21: pair 표기도 통일해야 한다 - freqtrade 봇의 pair는
+    # "AAVE/USDT:USDT"(선물 표기)인데, 수동 청산 감지 쪽(fetch_manual_trade_history)
+    # 은 같은 거래를 "AAVE/USDT"(선물 접미사 없이)로 만든다. 봇이 리밸런스로
+    # 청산한 걸 _bot_closed_keys()가 타이밍상 못 걸러내면(자정 리밸런스 직후
+    # 봇 거래 내역이 아직 API에 안 잡힌 순간의 레이스) 같은 청산이 "수동"으로도
+    # 잡혀 들어오는데, 이때 pair 표기가 서로 달라 이 dedup 키가 안 겹쳐서
+    # 텔레그램이 두 번(봇 알림 1번 + "수동" 알림 1번) 나갔다. ":" 뒤를 잘라
+    # 정규화하면 둘 다 같은 키가 되어 두 번째는 dedup에 걸러진다.
+    norm_pair = pair.split(":")[0] if pair else pair
+    return (norm_pair, when_iso[:19])
+
+
+# 2026-09-30: pair 표기를 맞추고 나서도(위 2026-09-21 주석) 같은 거래에
+# 텔레그램이 두 번 가는 사례가 계속 나왔다(NEAR 등, 9/27~9/29 실측) - 거래소에서
+# 직접 청산되면 freqtrade 자신의 실시간 웹훅과 대시보드의 수동감지
+# (backfill_notifications, 120초 주기 백그라운드 스레드)가 "동시에" 같은
+# 이벤트를 보게 되는데, 그 순간 둘 다 "_notif_seen_keys에 아직 없네" 라고
+# 확인만 하고 나서 각자 기록하면(체크와 삽입 사이에 락이 없어서) 둘 다
+# 통과해버리는 경쟁 상태였다. 체크+삽입을 하나의 락 안에서 원자적으로
+# 처리해야 그중 하나만 "선점"에 성공한다.
+_notif_claim_lock = threading.Lock()
+
+
+def _display_bot_name(name: str) -> str:
+    """봇 이름 앞의 "XSect" 를 뗀다(2026-10-06 요청 - 화면/텔레그램 표기 통일).
+    freqtrade 설정의 webhook bot_name 은 봇을 재시작해야 바뀌고, 이미 쌓인 알림
+    기록에도 옛 이름이 남아 있어서 여기서 일괄로 맞춘다."""
+    return re.sub(r"^XSect", "", name or "")
+
+
+def _claim_notification(pair: str, when_iso: str) -> bool:
+    """이 거래를 지금 이 경로가 처음 알린 것인지 원자적으로 확인한다.
+    True면 알림을 보내도 된다(이번이 처음) - False면 이미 다른 경로가
+    같은 순간 먼저 선점했으니 건너뛴다."""
+    key = _notif_dedup_key(pair, when_iso)
+    with _notif_claim_lock:
+        if key in _notif_seen_keys:
+            return False
+        _notif_seen_keys.add(key)
+        return True
+
+
+def _normalize_freqtrade_dt(raw: str) -> str:
+    """freqtrade webhook .format() 템플릿이 datetime을 str()로 그대로 박아
+    보내주는 형식("2026-09-17 12:24:20.364926+00:00")을 다른 곳에서 쓰는
+    ISO 표기("...T...+00:00")로 맞춘다."""
+    s = raw.strip().replace(" ", "T", 1)
+    if "+" not in s[10:] and not s.endswith("Z"):
+        s += "+00:00"
+    return s
 
 
 # backfill_notifications()의 중복판정 기준. notifications(위 deque)는 화면에
@@ -295,14 +369,31 @@ def call_bot(base_url: str, path: str, params: dict | None = None):
 
 
 # XSectMomentum의 익절폭을 대시보드에서 재현하기 위한 캐시. 전략의
-# take_profit_vol_mult(3.0)/window(180)/min(0.05)/max(1.00)와 반드시 같은
+# take_profit_vol_mult(2.0)/window(180)/min(0.05)/max(1.00)와 반드시 같은
 # 값을 써야 한다 - 전략을 고치면 여기도 같이 고칠 것.
-_XSECT_TP_VOL_MULT = 3.0
+_XSECT_TP_VOL_MULT = 2.0
 _XSECT_TP_VOL_WINDOW = 180
 _XSECT_TP_MIN_PCT = 0.05
 _XSECT_TP_MAX_PCT = 1.00
 _xsect_tp_cache: dict = {}
 _XSECT_TP_TTL = 6 * 3600  # 변동성은 하루 사이 크게 안 바뀌니 자주 다시 구할 필요 없다
+
+
+def _binance_closed_daily_closes(pair: str, limit: int) -> list:
+    """바이낸스 선물 일봉 종가(마감된 봉만, 오래된 순). 실패하면 [].
+    freqtrade pair_candles 와 같은 기준(마지막 = 가장 최근에 마감된 봉)을 맞춘다."""
+    symbol = pair.split(":")[0].replace("/", "")
+    try:
+        resp = requests.get(
+            "https://fapi.binance.com/fapi/v1/klines",
+            params={"symbol": symbol, "interval": "1d", "limit": limit + 1},
+            timeout=8,
+        )
+        resp.raise_for_status()
+        now_ms = time.time() * 1000
+        return [float(k[4]) for k in resp.json() if k[6] < now_ms]  # k[6] = 봉 마감 시각
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _xsect_vol_scaled_tp(pair: str) -> float | None:
@@ -359,7 +450,8 @@ def exit_targets(trade: dict, bot: dict, config: dict) -> dict:
     시간청산: 전략의 custom_exit(max_hold_candles)이 담당하는데 freqtrade API로는
             노출되지 않아 BOTS 설정의 max_hold_h 를 쓴다.
     """
-    out = {"take_profit_abs": None, "hold_remaining_h": None, "hold_total_h": None}
+    out = {"take_profit_abs": None, "hold_remaining_h": None, "hold_total_h": None,
+           "hold_extended": False}
 
     lev = trade.get("leverage") or bot.get("leverage") or 1
     roi = config.get("minimal_roi") or {}
@@ -387,6 +479,10 @@ def exit_targets(trade: dict, bot: dict, config: dict) -> dict:
             elapsed = (datetime.now(timezone.utc) - opened).total_seconds() / 3600
             out["hold_remaining_h"] = round(max(0.0, max_hold - elapsed), 1)
             out["hold_total_h"] = max_hold
+            hard = bot.get("max_hold_hard_h")
+            if bot.get("hold_extends_if_ranked") and hard and elapsed >= max_hold:
+                out["hold_extended"] = True
+                out["hold_remaining_h"] = round(max(0.0, hard - elapsed), 1)
         except (ValueError, TypeError):
             pass
     return out
@@ -445,8 +541,9 @@ def _xsect_signals(bot: dict) -> list[dict]:
 
     실제 롱/숏 판정은 봇 프로세스 내부 상태(XSectMomentumStrategy.bot_loop_start
     가 채우는 self._longs/_shorts)에만 있고 freqtrade API로는 노출되지 않는다.
-    그래서 같은 규칙(끝에서 2번째 = 가장 최근에 완성된 봉 기준 lookback일 수익률)을
-    여기서 그대로 재현해 순위를 매긴다. 상위 top_k = 롱 후보, 하위 top_k = 숏 후보.
+    그래서 같은 규칙(마지막 행 = 가장 최근에 마감된 일봉 기준 lookback일 수익률 -
+    freqtrade pair_candles 엔 완성된 봉만 있다)을 여기서 그대로 재현해 순위를 매긴다.
+    상위 top_k = 롱 후보, 하위 top_k = 숏 후보.
     """
     try:
         wl = call_bot(bot["url"], "/api/v1/whitelist").get("whitelist", [])
@@ -456,49 +553,121 @@ def _xsect_signals(bot: dict) -> list[dict]:
     top_k = bot.get("top_k", 3)
     tf = bot.get("timeframe", "1d")
 
+    # 순위권이어도 재진입이 막힌 종목: (1) 마지막 청산 후 reentry_cooldown_h 이내
+    # (전략 _in_reentry_cooldown 과 같은 계산), (2) freqtrade 자체 잠금(청산 직후
+    # 다음 일봉까지 같은 방향 자동잠금 등). 둘 다 (pair, side) -> 해제시각(ms)으로 모은다.
+    now_ms = time.time() * 1000
+    locks: dict = {}
+    try:
+        for lk in call_bot(bot["url"], "/api/v1/locks").get("locks", []):
+            if lk.get("active") and lk.get("lock_end_timestamp", 0) > now_ms:
+                key = (lk["pair"], lk.get("side") or "*")
+                locks[key] = max(locks.get(key, 0), lk["lock_end_timestamp"])
+    except Exception:  # noqa: BLE001
+        pass
+    cooldown_ms = bot.get("reentry_cooldown_h", 0) * 3600 * 1000
+    if cooldown_ms:
+        try:
+            for t in call_bot(bot["url"], "/api/v1/trades", {"limit": 500}).get("trades", []):
+                if t.get("is_open") or not t.get("close_timestamp"):
+                    continue
+                end = t["close_timestamp"] + cooldown_ms
+                if end > now_ms:
+                    key = (t["pair"], "*")
+                    locks[key] = max(locks.get(key, 0), end)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 순위 점수: 기본은 lookback일 수익률, rank_score="rsi" 면 RSI(rsi_period)
+    # (XSectRsiStrategy._rank_score 와 같은 단순평균 방식). 수익률은 참고용으로 항상 같이 낸다.
+    score_kind = bot.get("rank_score", "ret")
+    rsi_n = bot.get("rsi_period", 14)
+    need = max(lb, rsi_n) + 1
+
     scores = []
     for pair in wl:
+        closes = []
         try:
             d = call_bot(bot["url"], "/api/v1/pair_candles",
-                         {"pair": pair, "timeframe": tf, "limit": lb + 3})
+                         {"pair": pair, "timeframe": tf, "limit": need + 2})
+            cols = {c: i for i, c in enumerate(d.get("columns", []))}
+            ci = cols.get("close")
+            if ci is not None:
+                closes = [row[ci] for row in d.get("data") or []]
         except Exception:  # noqa: BLE001
+            pass
+        # 정지된 봇은 캔들을 안 받아와서 비어있다 - 바이낸스 일봉(마감된 봉만)으로 대신 계산
+        if len(closes) < need:
+            closes = _binance_closed_daily_closes(pair, need + 2)
+        if len(closes) < need:
             continue
-        cols = {c: i for i, c in enumerate(d.get("columns", []))}
-        rows = d.get("data") or []
-        ci = cols.get("close")
-        if ci is None or len(rows) < lb + 2:
-            continue
-        closes = [row[ci] for row in rows]
-        now_c, past_c = closes[-2], closes[-2 - lb]
+        now_c, past_c = closes[-1], closes[-1 - lb]
         if not now_c or not past_c:
             continue
-        scores.append({"bot": bot["id"], "pair": pair, "close": now_c,
-                       "ret": now_c / past_c - 1.0})
+        item = {"bot": bot["id"], "pair": pair, "close": now_c,
+                "ret": now_c / past_c - 1.0, "score_kind": score_kind}
+        if score_kind == "rsi":
+            diffs = [b - a for a, b in zip(closes[-rsi_n - 1:-1], closes[-rsi_n:])]
+            gain = sum(x for x in diffs if x > 0) / rsi_n
+            loss = sum(-x for x in diffs if x < 0) / rsi_n
+            if gain == 0 and loss == 0:
+                continue
+            item["score"] = 100.0 if loss == 0 else 100.0 - 100.0 / (1.0 + gain / loss)
+        else:
+            item["score"] = item["ret"]
+        scores.append(item)
 
     # 상위/하위 top_k 를 가르려면 양쪽에 최소 top_k개씩은 있어야 한다
     # (XSectMomentumStrategy.bot_loop_start 와 같은 조건).
     if len(scores) < 2 * top_k:
         return []
 
-    scores.sort(key=lambda x: x["ret"])
+    # 계좌에 이 봇 것이 아닌 포지션이 있는 종목(다른 봇/수동) - 전략이 진입하지 않고 건너뛴다
+    foreign: set = set()
+    if bot.get("skip_foreign_positions"):
+        try:
+            own = {t["pair"] for t in call_bot(bot["url"], "/api/v1/status")}
+            acct = fetch_account()
+            for p in acct.get("positions", []):
+                pair = f"{p['base']}/USDT:USDT"
+                if pair not in own:
+                    foreign.add(pair)
+        except Exception:  # noqa: BLE001
+            pass
+
+    scores.sort(key=lambda x: x["score"])
     n = len(scores)
     for i, s in enumerate(scores):
-        rank = i + 1  # 1 = 수익률 최하위
-        if rank <= top_k:
-            status = "short"
-        elif rank > n - top_k:
-            status = "long"
-        else:
-            status = "wait"
-        s.update({"rank": rank, "total": n, "status": status})
-    scores.sort(key=lambda x: x["ret"], reverse=True)
+        s.update({"rank": i + 1, "total": n, "status": "wait", "lock_until": None,
+                  "foreign": s["pair"] in foreign})  # 1 = 최하위
+
+    # 전략 _pick_eligible 과 같은 규칙: 순위 순서대로 보면서 재진입 대기 종목(과
+    # skip_foreign_positions 봇이면 다른 포지션이 있는 종목)은 건너뛰고 top_k개를 후보로. 중간 순위(n//2)를 넘어서까지는 내려가지 않는다.
+    def pick(order: list, side: str) -> None:
+        picked = 0
+        for s in order[: n // 2]:
+            if picked >= top_k:
+                break
+            end = max(locks.get((s["pair"], side), 0), locks.get((s["pair"], "*"), 0))
+            if end:
+                s["lock_until"] = datetime.fromtimestamp(end / 1000, timezone.utc).isoformat()
+                continue
+            if s["foreign"]:
+                continue
+            s["status"] = side
+            picked += 1
+
+    pick(scores[::-1], "long")
+    pick(scores, "short")
+    scores.sort(key=lambda x: x["score"], reverse=True)
     return scores
 
 
 def fetch_signals():
     """지금 가동 중인 봇의 진입 조건. '지금 왜 진입을 안 하는지'를 화면에서 답하기 위한 것.
 
-    정지된 봇은 여기서 걸러진다 - 안 도는 봇의 신호를 보여줘 봐야 혼란만 준다.
+    정지된 박스형 봇은 여기서 걸러진다 - 안 도는 봇의 신호를 보여줘 봐야 혼란만 준다.
+    순위형(xsect_momentum) 봇은 정지 중이어도 표시하고 stopped 로 표시한다.
     이렇게 하면 대시보드 전원 버튼으로 봇을 켜고 끌 때마다 이 패널이 무엇을
     기준으로 도는지 코드를 따로 손볼 필요가 없다.
     """
@@ -512,13 +681,17 @@ def fetch_signals():
             cfg = call_bot(bot["url"], "/api/v1/show_config")
         except Exception:  # noqa: BLE001
             continue
-        if cfg.get("state") != "running":
+        kind = bot.get("signal_kind", "box")
+        running = cfg.get("state") == "running"
+        # 순위형 봇은 정지 중이어도 "켜면 무엇을 살지"를 보여준다(2026-10-06,
+        # 모멘텀 -> RSI 전환 중 RSI 봇 순위를 미리 보려고). 박스형은 그대로 숨긴다.
+        if not running and kind != "xsect_momentum":
             continue
 
-        kind = bot.get("signal_kind", "box")
         items = _xsect_signals(bot) if kind == "xsect_momentum" else _box_signals(bot)
         for item in items:
             item["kind"] = kind
+            item["stopped"] = not running
             item.setdefault("bot_name", bot["name"])
         out.extend(items)
     _signal_cache.update({"ts": now, "data": out})
@@ -836,6 +1009,8 @@ def fetch_bot_summary(bot: dict, days: int = 14) -> dict:
                 "profit_all_pct": (
                     profit_all_abs / bot_starting_capital * 100 if bot_starting_capital else 0
                 ),
+                # 위 % 의 분모 - api_summary 가 손익을 보정하면 % 도 다시 계산한다
+                "stable_starting_capital": bot_starting_capital,
                 "trade_count": profit.get("trade_count", 0),
                 "winrate": profit.get("winrate", 0),
                 # freqtrade가 내려주는 max_drawdown(비율)도 profit_all_percent와 똑같이
@@ -863,6 +1038,9 @@ def fetch_bot_summary(bot: dict, days: int = 14) -> dict:
                         # 이 전략은 손절선이 진입가 대비 고정%가 아니라 박스 경계라
                         # 포지션마다 다르다. 화면에서 "어디서 잘리는지"를 보려면 필요.
                         "stop_loss_abs": t.get("stop_loss_abs"),
+                        # 진입 주문이 아직 안 체결됐으면 거래소엔 포지션이 없다 - 아래
+                        # api_summary 의 계좌 대조에서 "이미 청산됨"으로 오판하지 않게
+                        "has_open_orders": t.get("has_open_orders", False),
                         **exit_targets(t, bot, config),
                     }
                     for t in open_trades
@@ -873,6 +1051,7 @@ def fetch_bot_summary(bot: dict, days: int = 14) -> dict:
                         "is_short": t.get("is_short", False),
                         "close_profit_pct": t.get("close_profit_pct"),
                         "close_profit_abs": t.get("close_profit_abs"),
+                        "open_date": t.get("open_date"),
                         "close_date": t.get("close_date"),
                         "exit_reason": t.get("exit_reason"),
                         "exit_reason_ko": exit_reason_ko(t.get("exit_reason")),
@@ -948,6 +1127,45 @@ def api_bot_control(bot_id: str, action: str):
         return jsonify({"ok": False, "error": str(exc)}), 502
 
 
+# 봇 진입 직후엔 계좌 조회 캐시(ACCOUNT_TTL)가 아직 옛 값일 수 있다 - 이 시간 안에 연
+# 거래는 계좌에 안 보여도 그대로 둔다.
+FRESH_TRADE_GRACE_SEC = 60
+
+
+def _drop_positions_closed_on_exchange(connected: list, acct: dict) -> None:
+    """봇 기록엔 열려 있는데 바이낸스 계좌엔 없는 포지션을 화면에서 뺀다.
+
+    2026-10-06: 모멘텀 봇을 정지한 뒤 바이낸스에서 직접 5개를 청산했는데, 정지된
+    freqtrade 는 거래소를 안 보므로 봇 DB엔 6개가 계속 "보유 중"으로 남아 대시보드에
+    유령 포지션으로 떴다. 실제 계좌를 기준으로 맞춘다. 그 거래의 미실현손익(옛 시세
+    기준)도 봇 손익에서 뺀다 - 실제 청산 손익은 수동 손익(income)으로 따로 잡히므로
+    빼지 않으면 같은 거래가 두 번 계산된다. 계좌 조회 실패 시엔 손대지 않는다.
+    """
+    if not acct.get("ok"):
+        return
+    held = {(f"{p['base']}/USDT:USDT", p["side"]) for p in acct.get("positions", [])}
+    now = datetime.now(timezone.utc)
+    for b in connected:
+        live, gone = [], []
+        for t in b.get("open_trades", []):
+            side = "short" if t.get("is_short") else "long"
+            try:
+                opened = datetime.strptime(t.get("open_date") or "", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                fresh = (now - opened).total_seconds() < FRESH_TRADE_GRACE_SEC
+            except ValueError:
+                fresh = False
+            if (t["pair"], side) in held or t.get("has_open_orders") or fresh:
+                live.append(t)
+            else:
+                gone.append(t)
+        if gone:
+            b["open_trades"] = live
+            b["closed_on_exchange"] = [t["pair"] for t in gone]
+            b["profit_all_abs"] = b.get("profit_all_abs", 0) - sum(t.get("profit_abs") or 0 for t in gone)
+            cap = b.get("stable_starting_capital")
+            b["profit_all_pct"] = b["profit_all_abs"] / cap * 100 if cap else 0
+
+
 @app.get("/api/summary")
 def api_summary():
     # 누적손익추이 그래프의 기간 선택. 정해둔 값 밖이면(URL 조작 등) 기본값으로
@@ -958,6 +1176,8 @@ def api_summary():
 
     bots = [fetch_bot_summary(b, days=days) for b in BOTS]
     connected = [b for b in bots if b.get("connected")]
+    acct = fetch_account()
+    _drop_positions_closed_on_exchange(connected, acct)
 
     # 총자산: 모든 봇이 같은 바이낸스 계좌를 공유하므로 합산하면 중복 계산이 된다.
     # 계좌 전체 잔고를 한 번만 취한다(봇마다 같은 값을 보고함).
@@ -1011,7 +1231,6 @@ def api_summary():
     # 수동 포지션도 세야 한다. 바이낸스를 직접 봐야 화이트리스트 밖 페어도
     # 잡힌다 - 그동안 QQQ 롱처럼 봇이 모르는 포지션이 있어도 "보유 포지션 0"
     # 으로 잘못 표시됐다.
-    acct = fetch_account()
     manual_positions = [p for p in acct.get("positions", []) if not p.get("managed")] if acct.get("ok") else []
     manual_position_count = len(manual_positions)
     # 포지션 방향(도넛) 위젯도 봇 포지션만 세고 있었다 - 수동 포지션의
@@ -1055,6 +1274,12 @@ def _fetch_futures_tickers(symbols: list[str]) -> list[dict]:
             "symbol": t["symbol"],
             "price": float(t["lastPrice"]),
             "change_pct": float(t["priceChangePercent"]),
+            # AI 리포트에 24시간 레인지/거래대금 맥락을 주기 위해 추가.
+            # 기존 /api/tickers(사이드바 시세) 호출부는 이 필드들을 안 써도
+            # 무시되니 그대로 호환된다.
+            "high": float(t["highPrice"]),
+            "low": float(t["lowPrice"]),
+            "quote_volume": float(t["quoteVolume"]),
         }
         for t in resp.json()
         if t["symbol"] in wanted
@@ -1081,6 +1306,9 @@ EXIT_REASON_KO = {
     "stop_loss": "손절 (안전망)",
     "trailing_stop_loss": "손절 (박스 경계)",
     "max_hold": "시간 청산",
+    # XSectMomentum custom_exit 사유
+    "rebalance": "보유기간 만료 (순위 이탈)",
+    "take_profit": "익절 (변동성 기준)",
     "exit_signal": "전략 청산 신호",
     "force_exit": "수동 청산",
     "emergency_exit": "긴급 청산",
@@ -1304,12 +1532,6 @@ def fetch_manual_trade_history() -> list[dict]:
     ):
         return _manual_history_cache["data"]
 
-    # 새로 생긴 청산을 감지해서 알림에 남기려면(아래) "이전에 뭐가 있었는지"가
-    # 있어야 한다 - 캐시를 덮어쓰기 전에 미리 떼어둔다. 첫 로딩(서버 막 시작한
-    # 직후, prev가 None)일 때는 비교 기준이 없으므로 알림을 만들지 않는다 -
-    # 안 그러면 서버 재시작마다 과거 청산들을 전부 "새 알림"으로 쏟아낸다.
-    prev = _manual_history_cache["data"]
-
     try:
         raw = _income_realized_pnl(int(now * 1000) - MANUAL_HISTORY_LOOKBACK_MS)
     except Exception:  # noqa: BLE001
@@ -1374,32 +1596,15 @@ def fetch_manual_trade_history() -> list[dict]:
         )
     out.sort(key=lambda x: x["close_date"], reverse=True)
 
-    # 이전에 없던 항목(=새로 감지된 수동 청산)만 "최근 알림"에 남긴다. 봇의
-    # exit_fill 이벤트와 스키마를 맞춰서 event="exit_fill" 로 기록했다 - 그래야
-    # 프론트의 알림 렌더링/청산음 로직을 그대로 탄다(수동이라고 다른 취급을 할
-    # 이유가 없다). bot_name 이 "수동"이고 exit_reason_ko 가 이미 구분해주므로
-    # 화면에서 봇 것과 헷갈리지 않는다.
-    if prev is not None:
-        prev_keys = {(t["pair"], t["close_date"]) for t in prev}
-        for t in out:
-            key = (t["pair"], t["close_date"])
-            if key in prev_keys:
-                continue
-            record_notification(
-                {
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "event": "exit_fill",
-                    "bot_name": "수동",
-                    "pair": t["pair"],
-                    "side_ko": None,  # 방향을 못 찾은 경우도 있어 side_ko 는 안 쓴다(아래 참고)
-                    "is_short": t["is_short"],
-                    "profit_ratio_pct": t["close_profit_pct"],
-                    "profit_amount": t["close_profit_abs"],
-                    "stake_currency": "USDT",
-                    "exit_reason_ko": t["exit_reason_ko"],
-                }
-            )
-
+    # 알림 기록은 여기서 하지 않는다. 예전엔 이 함수가 직전 캐시(prev)와
+    # 비교해서 "새로 감지된 것"만 자체적으로 record_notification 했는데,
+    # 이 캐시는 TTL마다 통째로 갈아끼워지고 episode 묶음의 close_date(마지막
+    # 체결 시각)가 뒤늦게 도착한 부분체결 때문에 재계산 때마다 몇 분씩
+    # 밀릴 수 있어서, 같은 청산 하나가 "새 항목"으로 다시 잡혀 알림이 중복
+    # 기록되는 문제가 있었다(텔레그램은 안 가고 대시보드 "최근 알림"에만
+    # 같은 거래가 두 번 뜸 - 2026-09-20 확인). 지금은 backfill_notifications()
+    # 가 이 함수의 결과를 파일 전체 기준 영구 dedup(_notif_seen_keys)으로
+    # 걸러서 기록+텔레그램 전송까지 전담하므로, 여기서 따로 기록하면 안 된다.
     _manual_history_cache.update({"ts": now, "data": out})
     return out
 
@@ -1464,14 +1669,23 @@ def webhook_relay():
 
     data = request.get_json(force=True, silent=True) or {}
     event = data.get("event", "")
-    bot_name = data.get("bot_name", "봇")
+    bot_name = _display_bot_name(data.get("bot_name", "봇"))
     pair = data.get("pair", "?")
     direction = data.get("direction", "")  # "Long" or "Short"
     is_short = direction == "Short"
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    # entry_fill/exit_fill은 실제 체결시각(open_date/close_date)이 있으면 그걸
+    # dedup 기준시각으로 쓴다. now_iso(웹훅 수신 시각)를 쓰면 backfill_notifications()가
+    # 같은 거래를 close_date 기준으로 나중에 다시 보고 "새 거래"로 착각해 알림이
+    # 두 번(다른 bot_name 표기로) 나가는 문제가 있었다 - 수신 지연이 1~2초만
+    # 벌어져도 초 단위 dedup key가 어긋났기 때문.
+    trade_dt_raw = data.get("close_date") or data.get("open_date")
+    event_time = _normalize_freqtrade_dt(trade_dt_raw) if trade_dt_raw else now_iso
 
     if event == "entry_fill":
+        if not _claim_notification(pair, event_time):
+            return jsonify({"ok": True, "skipped": "duplicate"})
         # 롱 진입 = 매수 주문, 숏 진입 = 매도 주문
         side_ko = "매도" if is_short else "매수"
         text = (
@@ -1484,7 +1698,7 @@ def webhook_relay():
         send_telegram(text)
         record_notification(
             {
-                "time": now_iso,
+                "time": event_time,
                 "event": "entry_fill",
                 "bot_name": bot_name,
                 "pair": pair,
@@ -1494,6 +1708,8 @@ def webhook_relay():
         )
 
     elif event == "exit_fill":
+        if not _claim_notification(pair, event_time):
+            return jsonify({"ok": True, "skipped": "duplicate"})
         # 롱 청산 = 매도 주문, 숏 청산(환매수) = 매수 주문 -> 진입과 반대
         side_ko = "매수" if is_short else "매도"
         try:
@@ -1520,7 +1736,7 @@ def webhook_relay():
         send_telegram(text)
         record_notification(
             {
-                "time": now_iso,
+                "time": event_time,
                 "event": "exit_fill",
                 "bot_name": bot_name,
                 "pair": pair,
@@ -1562,7 +1778,10 @@ def webhook_relay():
 
 @app.get("/api/notifications")
 def api_notifications():
-    return jsonify(list(notifications))
+    return jsonify([
+        {**n, "bot_name": _display_bot_name(n["bot_name"])} if n.get("bot_name") else n
+        for n in notifications
+    ])
 
 
 
@@ -1599,7 +1818,44 @@ def _send_backfill_telegram(t: dict) -> None:
     send_telegram(text)
 
 
+def _send_entry_telegram(bot_name: str, pair: str, is_short: bool, late: bool) -> None:
+    side_ko = "매도" if is_short else "매수"
+    send_telegram(
+        f"[{bot_name}] [선물 진입{' · 뒤늦게 발견됨' if late else ''}]\n"
+        f"종목: {pair}\n"
+        f"방향: {side_ko}\n"
+        f"상태: 체결\n"
+        f"====================="
+    )
+
+
+def _record_entry(bot_name: str, pair: str, is_short: bool, when_iso: str) -> None:
+    record_notification(
+        {
+            "time": when_iso,
+            "event": "entry_fill",
+            "bot_name": bot_name,
+            "pair": pair,
+            "side_ko": "매도" if is_short else "매수",
+            "is_short": is_short,
+        }
+    )
+
+
+# 진입 알림 백필은 최근 이 시간 안에 연 거래만 본다. 웹훅 dedup 키가 체결시각
+# (open_date) 기준으로 바뀌기 전(2026-09)의 옛 진입 알림은 키가 달라서, 범위를
+# 넓히면 오래전 진입을 "놓친 것"으로 착각해 다시 보낸다.
+ENTRY_BACKFILL_LOOKBACK = timedelta(hours=6)
+_backfill_lock = threading.Lock()
+
+
 def backfill_notifications() -> int:
+    # 주기 루프와 포지션 감시 루프(_position_watch_loop)가 동시에 부를 수 있다
+    with _backfill_lock:
+        return _backfill_notifications_locked()
+
+
+def _backfill_notifications_locked() -> int:
     """청산 이력(봇 + 수동)에는 있는데 '최근 알림'엔 없는 것들을 시간순으로
     채워 넣는다.
 
@@ -1611,16 +1867,21 @@ def backfill_notifications() -> int:
     dedup 기준은 화면표시용 notifications(최근 200건 deque)가 아니라 파일
     전체 기준의 _notif_seen_keys 다 - 200건 밖으로 밀려난 옛 항목을 매
     120초마다 "새로 발견"으로 착각해 텔레그램을 하루종일 반복 발송하던
-    버그가 있었다.
+    버그가 있었다. _claim_notification()으로 원자적으로 확인하는 이유는
+    위 2026-09-30 주석 참고 (웹훅 실시간 처리와의 경쟁 상태 방지).
     """
-    existing = _notif_seen_keys
-
     items = []
+    bot_trades_for_entries = []
     for bot in BOTS:
         try:
             summary = fetch_bot_summary(bot)
         except Exception:  # noqa: BLE001
             continue
+        if not summary.get("connected"):
+            continue
+        bot_trades_for_entries.append(
+            (bot["name"], summary.get("open_trades", []) + summary.get("recent_trades", []))
+        )
         for t in summary.get("recent_trades", []):
             if not t.get("close_date"):
                 continue
@@ -1648,14 +1909,36 @@ def backfill_notifications() -> int:
             }
         )
 
+    # 진입: 웹훅을 놓친 봇 진입(대시보드 재시작 중 체결 등)을 찾아 알린다
+    since = datetime.now(timezone.utc) - ENTRY_BACKFILL_LOOKBACK
+    entries = []
+    for bot_name, trades in bot_trades_for_entries:
+        for t in trades:
+            od = t.get("open_date")
+            if not od or (t.get("has_open_orders") and not t.get("close_date")):
+                continue  # 진입 주문이 아직 체결 전
+            try:
+                opened = datetime.strptime(od, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if opened >= since:
+                entries.append((od, bot_name, t))
+    entries.sort(key=lambda x: x[0])
+    added = 0
+    for od, bot_name, t in entries:
+        when_iso = od.replace(" ", "T") + "+00:00"
+        if not _claim_notification(t["pair"], when_iso):
+            continue
+        _record_entry(bot_name, t["pair"], bool(t.get("is_short")), when_iso)
+        _send_entry_telegram(bot_name, t["pair"], bool(t.get("is_short")), late=True)
+        added += 1
+
     # 오래된 것부터 순서대로 appendleft 해야 최종적으로 최신이 맨 앞에 온다
     # (notifications 파일을 처음 불러올 때 쓰는 것과 같은 원리 - 위 주석 참고).
     items.sort(key=lambda x: x["close_date"])
-    added = 0
     for t in items:
         when_iso = t["close_date"].replace(" ", "T") + "+00:00"
-        key = _notif_dedup_key(t["pair"], when_iso)
-        if key in existing:
+        if not _claim_notification(t["pair"], when_iso):
             continue
         record_notification(
             {
@@ -1670,11 +1953,9 @@ def backfill_notifications() -> int:
                 "exit_reason_ko": t["exit_reason_ko"],
             }
         )
-        # 여기 들어온 건 정의상 실시간 웹훅으로 못 받은 것들이다(대부분 수동
-        # 청산). dedup 덕분에 이미 알림이 있던 것들은 위 continue 에서
-        # 걸러지므로, 실시간 웹훅이 이미 보낸 것과 중복 발송될 일은 없다.
-        # (record_notification이 _notif_seen_keys에 key를 바로 추가하므로
-        # 여기서 따로 existing에 넣어줄 필요는 없다.)
+        # 여기 들어온 건 _claim_notification을 통과한, 이 경로가 처음
+        # 발견한 청산이다 - 웹훅이 이미 같은 순간 선점했다면 위에서
+        # continue 되므로 중복 발송될 일은 없다.
         _send_backfill_telegram(t)
         added += 1
     if added:
@@ -1701,6 +1982,146 @@ def _backfill_notifications_loop() -> None:
 
 
 # ============================================================
+# 계좌 포지션 실시간 감시 (2026-10-06)
+#
+# 봇이 낸 체결은 freqtrade 웹훅으로 바로 오지만, 바이낸스에서 직접 연/닫은 포지션은
+# 웹훅이 없어서 위 백필 주기(120초)와 수동 이력 캐시(180초)를 기다려야 해 최대 몇 분씩
+# 늦게 알림이 왔다. 계좌 포지션을 몇 초마다 직접 보고, 바뀐 게 있으면 그 자리에서
+# 백필을 돌린다. 청산 직후엔 실현손익(income) 기록이 늦게 잡힐 수 있어 몇 번 더 본다.
+# 백필 주기 루프는 그대로 두어, 여기서 놓친 것도 다음 주기에 잡히게 한다.
+# ============================================================
+POSITION_WATCH_SEC = 5
+# 새 포지션이 생기면 이만큼 기다렸다가, 그때도 봇 거래가 아니면 수동 진입으로 알린다
+# (봇 진입은 웹훅이 먼저 처리한다).
+MANUAL_ENTRY_GRACE_SEC = 20
+BACKFILL_RECHECK_DELAYS = (3, 15, 60)
+
+
+def _bot_open_pairs() -> set:
+    pairs = set()
+    for bot in BOTS:
+        try:
+            for t in call_bot(bot["url"], "/api/v1/status"):
+                pairs.add((t["pair"].split(":")[0], bool(t.get("is_short"))))
+        except Exception:  # noqa: BLE001
+            pass
+    return pairs
+
+
+def _notify_manual_entry(symbol: str, amt: float, update_ms: int) -> None:
+    base = symbol[:-4] if symbol.endswith("USDT") else symbol
+    pair = f"{base}/USDT"
+    is_short = amt < 0
+    if (pair, is_short) in _bot_open_pairs():
+        return  # 봇이 연 포지션 - 웹훅/백필이 알린다
+    when_iso = datetime.fromtimestamp((update_ms or time.time() * 1000) / 1000, timezone.utc).isoformat()
+    if not _claim_notification(pair, when_iso):
+        return
+    _record_entry("수동", pair, is_short, when_iso)
+    _send_entry_telegram("수동", pair, is_short, late=False)
+
+
+def _position_watch_loop() -> None:
+    prev = None
+    pending_entries: dict = {}  # symbol -> (알림 판단 시각, 수량, updateTime)
+    recheck_at: list = []
+    while True:
+        now = time.time()
+        try:
+            cur = {}
+            for p in binance_signed("/fapi/v2/positionRisk"):
+                amt = float(p.get("positionAmt") or 0)
+                if amt:
+                    cur[p["symbol"]] = (amt, int(p.get("updateTime") or 0))
+            if prev is not None:
+                changed = any(cur.get(sym, (0.0, 0))[0] != old for sym, (old, _) in prev.items())
+                for sym, (amt, upd) in cur.items():
+                    old = prev.get(sym, (0.0, 0))[0]
+                    if old == 0 or (old > 0) != (amt > 0):
+                        pending_entries[sym] = (now + MANUAL_ENTRY_GRACE_SEC, amt, upd)
+                        changed = True
+                if changed:
+                    _account_cache["ts"] = 0  # 화면도 다음 갱신(4초) 때 바로 새 값
+                    recheck_at = sorted(set(recheck_at) | {now + d for d in BACKFILL_RECHECK_DELAYS})
+            prev = cur
+        except Exception:  # noqa: BLE001
+            pass
+
+        for sym, (due, amt, upd) in list(pending_entries.items()):
+            if now >= due:
+                del pending_entries[sym]
+                try:
+                    _notify_manual_entry(sym, amt, upd)
+                except Exception:  # noqa: BLE001
+                    pass
+        if recheck_at and now >= recheck_at[0]:
+            recheck_at = [t for t in recheck_at if t > now]
+            _manual_history_cache["ts"] = 0
+            _manual_pnl_raw_cache["ts"] = 0
+            try:
+                backfill_notifications()
+            except Exception:  # noqa: BLE001
+                pass
+        time.sleep(POSITION_WATCH_SEC)
+
+
+# ============================================================
+# 봇 헬스체크 - 2026-09-29 CoinGecko 요청이 쌓여 DB 커넥션 풀이 고갈되면서
+# XSectMomentum API 전체가 응답을 멈췄는데, 아무도 알림을 못 받아서 사용자가
+# 직접 화면 보고 알아챌 때까지 몰랐던 사고가 있었다. 그때 실제로 죽은 건
+# /api/v1/status 같은 DB를 타는 엔드포인트였으므로(/ping 같은 순수 liveness
+# 체크는 이런 종류의 장애를 못 잡는다), 그 엔드포인트를 그대로 헬스체크에
+# 쓴다. 상태가 바뀔 때(정상->장애, 장애->복구)만 텔레그램을 보내 도배되지
+# 않게 한다.
+BOT_HEALTH_CHECK_SEC = 60
+BOT_HEALTH_FAIL_THRESHOLD = 2  # 연속 실패 2회(최대 약 2분)부터 "장애"로 판단 - 순간 네트워크 지연 오탐 방지
+_bot_health_state: dict = {}
+
+
+def _check_bot_health_once() -> None:
+    for bot in BOTS:
+        state = _bot_health_state.setdefault(bot["id"], {"failures": 0, "down": False})
+        error_text = None
+        try:
+            call_bot(bot["url"], "/api/v1/status")
+            ok = True
+        except Exception as exc:  # noqa: BLE001
+            ok = False
+            error_text = str(exc)[:200]
+
+        if ok:
+            if state["down"]:
+                send_telegram(
+                    f"[{bot['name']}] [서버 상태]\n"
+                    f"API 응답이 다시 정상적으로 돌아왔습니다.\n"
+                    f"====================="
+                )
+            state["failures"] = 0
+            state["down"] = False
+        else:
+            state["failures"] += 1
+            if state["failures"] >= BOT_HEALTH_FAIL_THRESHOLD and not state["down"]:
+                state["down"] = True
+                send_telegram(
+                    f"[{bot['name']}] [🚨 서버 문제 감지]\n"
+                    f"API가 {BOT_HEALTH_FAIL_THRESHOLD}회 연속(최근 약 "
+                    f"{BOT_HEALTH_FAIL_THRESHOLD * BOT_HEALTH_CHECK_SEC}초) 응답하지 않습니다.\n"
+                    f"포지션 관리(익절/보유기간 만기 청산)가 멈춰있을 수 있으니 확인이 필요합니다.\n"
+                    f"오류: {error_text}\n"
+                    f"====================="
+                )
+
+
+def _bot_health_check_loop() -> None:
+    while True:
+        try:
+            _check_bot_health_once()
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(BOT_HEALTH_CHECK_SEC)
+
+
+# ============================================================
 # 코인 뉴스 - 여러 매체 RSS를 모아 중복 제거 + 한글 번역
 #
 # "빨리 올리는 곳들 위주로 싹 다 긁어와서" 요청에 맞춰, 실시간성이 좋은
@@ -1718,8 +2139,20 @@ NEWS_FEEDS = [
     ("U.Today", "https://u.today/rss"),
 ]
 
+# 미국 증시·거시 뉴스 (2026-10-06 추가 - 왼쪽 뉴스 목록을 없애고, 코인/미국증시에
+# 영향을 줄 만한 사건만 골라 "주요 뉴스" 한 줄과 AI 시황에 반영하기 위해).
+# 서버에서 실제로 받아지는 것만 골랐다(Yahoo/FXStreet 는 XML 이 깨져서 뺐다).
+MARKET_FEEDS = [
+    ("CNBC", "https://www.cnbc.com/id/100003114/device/rss/rss.html"),
+    ("CNBC Economy", "https://www.cnbc.com/id/20910258/device/rss/rss.html"),
+    ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
+    ("WSJ Markets", "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain"),
+    ("Investing.com", "https://www.investing.com/rss/news_25.rss"),
+    ("Federal Reserve", "https://www.federalreserve.gov/feeds/press_all.xml"),
+]
+
 NEWS_MAX_ITEMS = 30  # 이 이상은 번역 비용/시간만 늘고 화면에서 의미가 없다
-NEWS_REFRESH_SEC = 600  # 10분. 번역까지 하는 무거운 작업이라 자주 돌 필요 없다
+NEWS_REFRESH_SEC = 300  # 5분. 주요 뉴스 감지가 너무 늦지 않게(번역은 새 기사만 하므로 부담 적음)
 
 _news_cache = {"ts": 0.0, "data": []}
 _news_lock = threading.Lock()
@@ -1781,10 +2214,13 @@ def _parse_rss(source: str, xml_text: str) -> list[dict]:
         pub = None
         try:
             pub = parsedate_to_datetime(pub_raw)
-            if pub.tzinfo is None:
-                pub = pub.replace(tzinfo=timezone.utc)
         except (TypeError, ValueError):
-            pass
+            try:
+                pub = datetime.fromisoformat(pub_raw.strip())
+            except ValueError:
+                pub = None
+        if pub is not None and pub.tzinfo is None:
+            pub = pub.replace(tzinfo=timezone.utc)
         if not title or not link:
             continue
         out.append(
@@ -1874,9 +2310,39 @@ def _refresh_news_once() -> None:
         # 번역 API(익명, 무료)를 너무 몰아치지 않으려고 항목 사이에 살짝 텀을 둔다
         time.sleep(0.15)
 
+    market_items = []
+    for source, url in MARKET_FEEDS:
+        try:
+            resp = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            market_items += _parse_rss(source, resp.text)
+        except Exception:  # noqa: BLE001
+            continue
+    market_items.sort(
+        key=lambda x: x["published"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True
+    )
+    market_items = _dedupe_news(market_items)[:NEWS_MAX_ITEMS]
+
     with _news_lock:
-        _news_cache.update({"ts": time.time(), "data": out})
+        _news_cache.update({
+            "ts": time.time(),
+            "data": out,
+            "market": [
+                {"source": it["source"], "title": it["title"], "link": it["link"],
+                 "published": it["published"].isoformat() if it["published"] else None}
+                for it in market_items
+            ],
+        })
     _save_translation_cache()
+
+    # 주요 뉴스 판별은 원문(영어) 기준 - 번역 품질과 무관하게 판단하게
+    try:
+        _detect_major_news(
+            [dict(it, category_hint="코인") for it in all_items]
+            + [dict(it, category_hint="미국증시") for it in market_items]
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _news_refresh_loop() -> None:
@@ -1896,6 +2362,175 @@ def _news_refresh_loop() -> None:
 def api_news():
     with _news_lock:
         return jsonify({"news": list(_news_cache["data"])})
+
+
+# ---------------------------------------------------------------------------
+# 주요 뉴스 (2026-10-06)
+#
+# 새로 들어온 기사(코인 + 미국증시·거시)를 GPT 에게 "코인 시장이나 미국 증시 전체를
+# 움직일 만한가" 1~5점으로 매기게 해서, 4점 이상만 대시보드 상단 한 줄 뉴스와
+# AI 시황의 "주요 이벤트"로 보여준다. 5점짜리가 새로 나오면 AI 시황을 30분 주기를
+# 기다리지 않고 바로 다시 쓴다(비용 때문에 최소 간격 AI_OPINION_EVENT_MIN_GAP).
+# 한 번 매긴 기사는 링크 기준으로 기억해서(파일 저장) 재시작해도 다시 안 매긴다.
+# ---------------------------------------------------------------------------
+MAJOR_NEWS_FILE = ROOT / "major_news.json"
+MAJOR_NEWS_MIN_IMPORTANCE = 4
+MAJOR_NEWS_KEEP = timedelta(hours=24)
+MAJOR_NEWS_SCORE_WINDOW = timedelta(hours=6)  # 이보다 오래된 기사는 "지금 일어난 일"이 아니라 안 매긴다
+MAJOR_NEWS_BATCH = 40
+_major_news_lock = threading.Lock()
+
+
+def _load_major_news() -> dict:
+    try:
+        d = json.loads(MAJOR_NEWS_FILE.read_text(encoding="utf-8"))
+        return {"seen": d.get("seen", {}), "items": d.get("items", [])}
+    except Exception:  # noqa: BLE001
+        return {"seen": {}, "items": []}
+
+
+_major_news = _load_major_news()
+
+
+def _save_major_news() -> None:
+    try:
+        MAJOR_NEWS_FILE.write_text(json.dumps(_major_news, ensure_ascii=False), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _score_headlines(batch: list[dict]) -> list[dict]:
+    lines = "\n".join(
+        f"{i}. [{it['source']}] {it['title']} — {(it.get('summary') or '')[:160]}"
+        for i, it in enumerate(batch)
+    )
+    prompt = f"""아래는 방금 수집된 뉴스 헤드라인이다(코인 매체 + 미국 증시·거시 매체).
+각 기사가 "크립토 시장 전체" 또는 "미국 증시(나스닥·S&P500) 전체"의 가격에 단기적으로 영향을 줄 수 있는 정도를 1~5로 매겨라.
+
+5 = 시장 전체를 즉시 움직일 수 있는 사건 (FOMC 금리 결정·연준 의장 발언, CPI/고용 등 핵심 지표 발표와 예상 이탈,
+    대형 거래소 해킹·파산, 현물 ETF 승인/거부, 주요국 규제·금지 발표, 전쟁·지정학 충격, 시총 최상위 기업 실적 쇼크)
+4 = 상당한 영향 가능 (주요 지표 발표 예정/결과, 대형 기관의 대규모 매수·매도, 주요 코인 대형 업그레이드·상장폐지,
+    빅테크 실적·가이던스, 국채금리·달러 급변)
+3 = 일부 종목/섹터에 영향
+2 = 시장 영향 미미 (분석·전망 칼럼, 가격 해설)
+1 = 무관 (홍보, 소형 프로젝트, 개별 소형주)
+
+가격 움직임을 사후 해설하는 기사("비트코인 3% 상승" 등)는 새 사건이 아니면 2 이하로 매겨라.
+headline_ko 는 한국어 한 줄(40자 이내, 핵심 사실만), impact_ko 는 코인/미국증시에 줄 수 있는 영향 한 문장.
+수치나 사실을 지어내지 마라.
+
+{lines}"""
+    resp = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+        json={
+            "model": AI_OPINION_MODEL,
+            "messages": [
+                {"role": "system", "content": "너는 시장 영향도를 냉정하게 분류하는 금융 뉴스 데스크 에디터다. 과장하지 않는다."},
+                {"role": "user", "content": prompt},
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "headline_scores",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "items": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"type": "integer"},
+                                        "importance": {"type": "integer", "enum": [1, 2, 3, 4, 5]},
+                                        "category": {"type": "string", "enum": ["코인", "미국증시", "거시·정책", "지정학"]},
+                                        "headline_ko": {"type": "string"},
+                                        "impact_ko": {"type": "string"},
+                                    },
+                                    "required": ["id", "importance", "category", "headline_ko", "impact_ko"],
+                                    "additionalProperties": False,
+                                },
+                            }
+                        },
+                        "required": ["items"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "temperature": 0.1,
+            "max_tokens": 4000,
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return json.loads(resp.json()["choices"][0]["message"]["content"]).get("items", [])
+
+
+def _detect_major_news(items: list[dict]) -> None:
+    if not OPENAI_API_KEY:
+        return
+    now = datetime.now(timezone.utc)
+    with _major_news_lock:
+        seen = _major_news["seen"]
+        fresh = [
+            it for it in items
+            if it["link"] not in seen and it.get("published") and now - it["published"] <= MAJOR_NEWS_SCORE_WINDOW
+        ]
+    fresh.sort(key=lambda x: x["published"], reverse=True)
+    fresh = fresh[:MAJOR_NEWS_BATCH]
+    if not fresh:
+        return
+    scored = _score_headlines(fresh)
+
+    new_top = []
+    with _major_news_lock:
+        for sc in scored:
+            i = sc.get("id")
+            if not isinstance(i, int) or not 0 <= i < len(fresh):
+                continue
+            it = fresh[i]
+            _major_news["seen"][it["link"]] = now.isoformat()
+            if sc["importance"] >= MAJOR_NEWS_MIN_IMPORTANCE:
+                entry = {
+                    "time": it["published"].isoformat(),
+                    "found_at": now.isoformat(),
+                    "importance": sc["importance"],
+                    "category": sc["category"],
+                    "headline": sc["headline_ko"],
+                    "impact": sc["impact_ko"],
+                    "source": it["source"],
+                    "link": it["link"],
+                    "title_en": it["title"],
+                }
+                _major_news["items"].append(entry)
+                if sc["importance"] >= 5:
+                    new_top.append(entry)
+        # 응답에서 빠진 기사도 "본 것"으로 남겨 매번 다시 매기지 않게
+        for it in fresh:
+            _major_news["seen"].setdefault(it["link"], now.isoformat())
+        cutoff = now - MAJOR_NEWS_KEEP
+        _major_news["items"] = [
+            e for e in _major_news["items"] if datetime.fromisoformat(e["time"]) >= cutoff
+        ]
+        _major_news["items"].sort(key=lambda e: e["time"], reverse=True)
+        # seen 은 이틀치만 유지(피드에서 이미 사라진 링크)
+        old = (now - timedelta(days=2)).isoformat()
+        _major_news["seen"] = {k: v for k, v in _major_news["seen"].items() if v >= old}
+    _save_major_news()
+    if new_top:
+        _request_ai_opinion_refresh(new_top[0]["headline"])
+
+
+def major_news_items() -> list[dict]:
+    cutoff = datetime.now(timezone.utc) - MAJOR_NEWS_KEEP
+    with _major_news_lock:
+        return [e for e in _major_news["items"] if datetime.fromisoformat(e["time"]) >= cutoff]
+
+
+@app.get("/api/major_news")
+def api_major_news():
+    return jsonify({"items": major_news_items()})
 
 
 # ===================== AI 시황 의견 (참고용, 자동매매와 무관) =====================
@@ -1934,8 +2569,17 @@ def _save_ai_opinion_cache() -> None:
 
 _ai_opinion_cache: dict = _load_ai_opinion_cache()
 
+# 주요 뉴스(5점)가 새로 나오면 30분 주기를 기다리지 않고 다시 쓴다. 다만 큰 사건 때
+# 비슷한 기사가 연달아 나오므로 이 간격 안에서는 한 번만.
+AI_OPINION_EVENT_MIN_GAP = 10 * 60
+_ai_opinion_event = {"pending": None}
 
-def _refresh_ai_opinion_once() -> None:
+
+def _request_ai_opinion_refresh(reason: str) -> None:
+    _ai_opinion_event["pending"] = reason
+
+
+def _refresh_ai_opinion_once(trigger: str | None = None) -> None:
     if not OPENAI_API_KEY:
         return
 
@@ -1945,26 +2589,90 @@ def _refresh_ai_opinion_once() -> None:
         tickers = []
     with _news_lock:
         headlines = [n["title"] for n in _news_cache["data"][:15]]
+        market_headlines = [f"[{n['source']}] {n['title']}" for n in _news_cache.get("market", [])[:12]]
+    majors = major_news_items()[:10]
 
-    market_lines = "\n".join(
-        f"- {t['symbol']}: ${t['price']:,.4g} ({t['change_pct']:+.2f}% / 24h)" for t in tickers
-    ) or "(시세 조회 실패)"
+    def _fmt_ticker(t: dict) -> str:
+        rng = t["high"] - t["low"]
+        pos_in_range = (t["price"] - t["low"]) / rng * 100 if rng > 0 else 50.0
+        return (
+            f"- {t['symbol']}: ${t['price']:,.4g} ({t['change_pct']:+.2f}% / 24h), "
+            f"24h 레인지 ${t['low']:,.4g}~${t['high']:,.4g} (레인지 내 위치 {pos_in_range:.0f}%), "
+            f"24h 거래대금 ${t['quote_volume']:,.0f}"
+        )
+
+    market_lines = "\n".join(_fmt_ticker(t) for t in tickers) or "(시세 조회 실패)"
     news_lines = "\n".join(f"- {h}" for h in headlines) or "(뉴스 없음)"
+    us_news_lines = "\n".join(f"- {h}" for h in market_headlines) or "(뉴스 없음)"
+    major_lines = "\n".join(
+        f"- (중요도 {e['importance']}, {e['category']}, {e['time'][:16].replace('T', ' ')} UTC) {e['headline']} → {e['impact']}"
+        for e in majors
+    ) or "(지난 24시간 주요 이벤트 없음)"
+
+    # 롱/숏 판단은 GPT가 아니라 매일 결과로 채점·재학습되는 예측 모델(predictor.py)이
+    # 한다 - GPT는 결과를 보고 배우지 못하기 때문. GPT는 그 판단과 근거를 해설한다.
+    try:
+        pred = predictor.payload()
+    except Exception:  # noqa: BLE001
+        pred = {}
+    model_calls = {p["symbol"].replace("USDT", ""): p for p in (pred.get("today") or [])}
+    pm = pred.get("model") or {}
+    ho = pm.get("holdout") or {}
+    live = pred.get("live") or {}
+    if model_calls:
+        call_lines = "\n".join(
+            f"- {s}: {p['decision']} (오늘 상승확률 {p['prob_up'] * 100:.1f}%, 확신도 {p['confidence']}) "
+            f"주요 근거: " + ", ".join(f"{d['label']}({d['direction']} 쪽)" for d in p["drivers"])
+            for s, p in model_calls.items()
+        )
+        reliability = (
+            f"검증(최근 180일) 정확도 {ho.get('acc', 0) * 100:.1f}% vs '항상 롱' {ho.get('long_acc', 0) * 100:.1f}%, "
+            f"실전 누적 {live.get('acc', '-')}% ({live.get('n', 0)}건) vs 항상 롱 {live.get('always_long', '-')}%"
+        )
+        model_section = f"""
+[예측 모델의 오늘(UTC 하루) 판단 - 차트지표·펀딩비·미국증시·뉴스점수로 학습하고 매일 채점되는 모델]
+{call_lines}
+모델 신뢰도: {reliability}
+"""
+        view_rule = ("각 코인의 view는 반드시 위 예측 모델의 판단(롱/숏)을 그대로 쓰고, reasoning/detail에서 "
+                     "모델이 그렇게 판단한 근거(주요 근거 항목)를 시세·뉴스와 함께 해설하라. 모델 신뢰도가 "
+                     "기준선('항상 롱')보다 낮거나 비슷하면 그 사실과 '참고 수준의 신호'라는 점을 분명히 밝혀라.")
+    else:
+        model_section = ""
+        view_rule = "예측 모델 판단이 아직 없으므로 view는 '중립'으로 두라."
 
     prompt = f"""아래는 지금 시점의 바이낸스 선물 주요 종목 시세와 최근 크립토 뉴스 헤드라인이다.
 
-[시세 (24시간 변동률)]
+[시세 (24시간 변동률·레인지·거래대금)]
 {market_lines}
 
-[최근 뉴스 헤드라인]
+[최근 크립토 뉴스 헤드라인]
 {news_lines}
 
-이 정보를 바탕으로 BTC, ETH, SOL, XRP 각각에 대해 지금 시점 기준 시황 의견을 한국어로 작성해라.
+[최근 미국 증시·거시 뉴스 헤드라인 (원문)]
+{us_news_lines}
+
+[지난 24시간 주요 이벤트 (코인/미국증시에 영향이 큰 것으로 분류된 뉴스)]
+{major_lines}
+{model_section}
+이 정보를 바탕으로 BTC, ETH, SOL, XRP 각각에 대해 지금 시점 기준 시황 의견을 한국어로,
+전문 트레이더가 데스크 동료에게 공유하는 리서치 노트 톤으로 작성해라. 위에 주어진 가격·
+24h 레인지·거래대금·뉴스 헤드라인·예측 모델 정보 이외의 수치는 절대 지어내지 마라 - 모르면
+"판단 근거 부족"이라고 써라. {view_rule}
+
+각 항목마다 "짧은 요약"과 "상세 리포트" 두 버전을 만들어라. 상세 리포트는 화면에서
+클릭해야 펼쳐지는 영역이라 분량 제약이 없으니, 문단을 나눠 충분히 상세하게 써라.
+
 다음 JSON 스키마로만 답하라(다른 텍스트 없이):
 {{
-  "market_summary": "전체 시장에 대한 2~3문장 요약",
+  "market_summary": "전체 시장 2~3문장 요약 (카드가 접혀있을 때 보이는 짧은 버전)",
+  "market_report": "전체 시장 상세 리포트. 다음 흐름으로 3~5개 문단: (1)시장 개요 - 지금 24h 가격대·거래대금으로 본 전반적 분위기 (2)주요 동인 - 주요 이벤트·미국 증시/거시 뉴스·크립토 뉴스에서 확인되는 촉매·이슈 (3)자산간 상대적 흐름 - BTC 대비 알트 강약, 레인지 내 위치 비교 (4)리스크 요인 (5)전망 - 단기적으로 주시할 포인트. 각 문단은 3~5문장.",
   "coins": [
-    {{"symbol": "BTC", "view": "강세|약세|중립", "confidence": "높음|중간|낮음", "reasoning": "1~2문장 근거"}},
+    {{
+      "symbol": "BTC", "view": "롱|숏|중립", "confidence": "높음|중간|낮음",
+      "reasoning": "1~2문장 근거 (카드가 접혀있을 때 보이는 짧은 버전)",
+      "detail": "해당 종목 상세 리포트 2~4문단: 24h 레인지 내 포지션과 거래대금이 시사하는 것, 뉴스에서 이 종목과 관련된 촉매, BTC 대비 상대강도, 지금 시점의 리스크 요인과 무효화 조건(이 의견이 틀렸다고 판단할 기준), 짧은 결론"
+    }},
     ... (ETH, SOL, XRP도 같은 형식)
   ],
   "caveat": "이 의견의 한계에 대한 짧은 한 문장 (예: 표본이 뉴스 헤드라인 수준이라 근거가 얕다는 점 등)"
@@ -1982,21 +2690,75 @@ def _refresh_ai_opinion_once() -> None:
                 {
                     "role": "system",
                     "content": (
-                        "너는 암호화폐 시황을 요약하는 애널리스트다. 확정적인 예측이 아니라 "
-                        "가능성 기반의 의견을 제시하고, 과장하지 않는다. 반드시 요청된 JSON "
-                        "스키마로만 응답한다."
+                        "너는 헤지펀드 데스크의 크립토 담당 애널리스트다. 확정적인 예측이 아니라 "
+                        "가능성 기반의 의견을 제시하고, 과장하지 않는다. 주어지지 않은 수치나 "
+                        "지표는 절대 지어내지 않는다. 전문적이고 구체적인 문장으로 쓰되 불필요한 "
+                        "수식어는 배제한다. 반드시 요청된 JSON 스키마로만 응답한다."
                     ),
                 },
                 {"role": "user", "content": prompt},
             ],
-            "response_format": {"type": "json_object"},
+            # 2026-09-21: json_object 모드에서 가끔 coins 배열 구조를 안 지키고
+            # (ETH/SOL/XRP가 배열 원소가 아니라 BTC 객체 안에 중첩되는 등) 스키마를
+            # 이탈해서, 화면에 비트코인 하나만 남는 문제가 있었다. strict json_schema
+            # 로 바꿔서 이 구조 자체를 모델이 어길 수 없게 강제한다.
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "market_opinion",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "market_summary": {"type": "string"},
+                            "market_report": {"type": "string"},
+                            "coins": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "symbol": {"type": "string"},
+                                        "view": {"type": "string", "enum": ["롱", "숏", "중립"]},
+                                        "confidence": {"type": "string", "enum": ["높음", "중간", "낮음"]},
+                                        "reasoning": {"type": "string"},
+                                        "detail": {"type": "string"},
+                                    },
+                                    "required": ["symbol", "view", "confidence", "reasoning", "detail"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                            "caveat": {"type": "string"},
+                        },
+                        "required": ["market_summary", "market_report", "coins", "caveat"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
             "temperature": 0.3,
+            "max_tokens": 3000,
         },
-        timeout=30,
+        timeout=45,
     )
     resp.raise_for_status()
     content = resp.json()["choices"][0]["message"]["content"]
     parsed = json.loads(content)
+
+    # strict 스키마로도 혹시 모를 이상 응답을 한 번 더 막는다 - coins가 배열이
+    # 아니거나 원소에 symbol이 없으면 캐시를 덮어쓰지 않고 직전 값을 유지한다
+    # (비트코인 하나만 남는 문제를 다시 겪느니 갱신을 건너뛰는 게 낫다).
+    coins = parsed.get("coins")
+    if not isinstance(coins, list) or not coins or not all(
+        isinstance(c, dict) and c.get("symbol") for c in coins
+    ):
+        raise ValueError(f"AI 응답의 coins 구조가 예상과 다름: {coins!r}")
+
+    # 롱/숏과 확신도는 GPT가 바꿔 쓰지 못하게 모델 값으로 확정한다.
+    for c in coins:
+        call = model_calls.get(str(c.get("symbol", "")).upper())
+        if call:
+            c["view"] = call["decision"]
+            c["confidence"] = call["confidence"]
+            c["prob_up"] = call["prob_up"]
 
     with _ai_opinion_lock:
         _ai_opinion_cache.update(
@@ -2005,6 +2767,8 @@ def _refresh_ai_opinion_once() -> None:
                 "data": {
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                     "model": AI_OPINION_MODEL,
+                    # 주요 뉴스 때문에 앞당겨 다시 쓴 경우 그 뉴스 (화면에 표시)
+                    "trigger": trigger,
                     **parsed,
                 },
             }
@@ -2018,11 +2782,31 @@ def _ai_opinion_refresh_loop() -> None:
     만료됐을 때만 유료 API를 호출한다."""
     while True:
         try:
-            if time.time() - _ai_opinion_cache.get("ts", 0) >= AI_OPINION_REFRESH_SEC:
+            age = time.time() - _ai_opinion_cache.get("ts", 0)
+            event = _ai_opinion_event["pending"]
+            if event and age >= AI_OPINION_EVENT_MIN_GAP:
+                _ai_opinion_event["pending"] = None
+                _refresh_ai_opinion_once(trigger=event)
+            elif age >= AI_OPINION_REFRESH_SEC:
+                _ai_opinion_event["pending"] = None
                 _refresh_ai_opinion_once()
         except Exception:  # noqa: BLE001
             pass
-        time.sleep(60)
+        time.sleep(30)
+
+
+@app.get("/api/ai_prediction")
+def api_ai_prediction():
+    """예측 모델의 오늘 판단, 실전 채점 성적, 모델 검증 성적 (참고용)."""
+    try:
+        return jsonify(predictor.payload())
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 200
+
+
+def _news_headlines_for_predictor() -> list[str]:
+    with _news_lock:
+        return [n["title"] for n in _news_cache["data"][:25]]
 
 
 @app.get("/api/ai_opinion")
@@ -2052,5 +2836,9 @@ if __name__ == "__main__":
     threading.Thread(target=_news_refresh_loop, daemon=True).start()
     threading.Thread(target=_ai_opinion_refresh_loop, daemon=True).start()
     threading.Thread(target=_backfill_notifications_loop, daemon=True).start()
+    threading.Thread(target=_bot_health_check_loop, daemon=True).start()
+    threading.Thread(target=_position_watch_loop, daemon=True).start()
+    threading.Thread(target=predictor.loop, args=(_news_headlines_for_predictor, OPENAI_API_KEY),
+                     daemon=True).start()
 
     app.run(host=host, port=5000, debug=False, threaded=True)
