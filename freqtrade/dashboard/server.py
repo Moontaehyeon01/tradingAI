@@ -184,8 +184,15 @@ def _claim_notification(pair: str, when_iso: str) -> bool:
     True면 알림을 보내도 된다(이번이 처음) - False면 이미 다른 경로가
     같은 순간 먼저 선점했으니 건너뛴다."""
     key = _notif_dedup_key(pair, when_iso)
+    # 같은 청산을 freqtrade(주문 체결 시각)와 수동 감지(실현손익 기록 시각)가 1~2초
+    # 다르게 볼 수 있어(2026-10-09) 앞뒤 2초까지 같은 거래로 본다.
+    try:
+        base = datetime.fromisoformat(key[1])
+        near = {(key[0], (base + timedelta(seconds=d)).isoformat()[:19]) for d in range(-2, 3)}
+    except ValueError:
+        near = {key}
     with _notif_claim_lock:
-        if key in _notif_seen_keys:
+        if near & _notif_seen_keys:
             return False
         _notif_seen_keys.add(key)
         return True
@@ -1025,8 +1032,10 @@ def fetch_bot_summary(bot: dict, days: int = 14) -> dict:
                 ),
                 "open_trades": [
                     {
+                        "trade_id": t.get("trade_id"),
                         "pair": t["pair"],
                         "is_short": t["is_short"],
+                        "amount": t.get("amount") or 0,
                         "leverage": t.get("leverage", 1),
                         "open_rate": t["open_rate"],
                         "current_rate": t.get("current_rate"),
@@ -1140,24 +1149,43 @@ def _drop_positions_closed_on_exchange(connected: list, acct: dict) -> None:
     유령 포지션으로 떴다. 실제 계좌를 기준으로 맞춘다. 그 거래의 미실현손익(옛 시세
     기준)도 봇 손익에서 뺀다 - 실제 청산 손익은 수동 손익(income)으로 따로 잡히므로
     빼지 않으면 같은 거래가 두 번 계산된다. 계좌 조회 실패 시엔 손대지 않는다.
+
+    2026-10-10: "계좌에 같은 페어·방향 포지션이 있으면 살아있음"으로만 보니, 모멘텀 봇의
+    유령 AAVE 롱(10/6 직접 청산, 기록 정리 불가)이 RSI 봇이 새로 잡은 AAVE 롱 때문에
+    모멘텀 탭에도 다시 떴다. 계좌의 포지션 수량을 가장 최근에 연 거래부터 나눠 주고,
+    남은 수량으로 덮이는 거래만 살아있는 것으로 본다(옛 유령 거래가 남의 포지션을 못 가져감).
     """
     if not acct.get("ok"):
         return
-    held = {(f"{p['base']}/USDT:USDT", p["side"]) for p in acct.get("positions", [])}
+    remaining: dict = {}
+    for p in acct.get("positions", []):
+        k = (f"{p['base']}/USDT:USDT", p["side"])
+        remaining[k] = remaining.get(k, 0.0) + abs(float(p.get("amount") or 0))
     now = datetime.now(timezone.utc)
+
+    def opened_at(t):
+        try:
+            return datetime.strptime(t.get("open_date") or "", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    alive = set()
+    every = [(b["id"], t) for b in connected for t in b.get("open_trades", [])]
+    for bid, t in sorted(every, key=lambda x: opened_at(x[1]), reverse=True):
+        key = (t["pair"], "short" if t.get("is_short") else "long")
+        fresh = (now - opened_at(t)).total_seconds() < FRESH_TRADE_GRACE_SEC
+        need = float(t.get("amount") or 0)
+        if t.get("has_open_orders") or fresh:
+            alive.add((bid, t.get("trade_id")))
+            remaining[key] = max(remaining.get(key, 0.0) - need, 0.0)
+        elif remaining.get(key, 0.0) >= need * 0.99 and remaining.get(key, 0.0) > 0:
+            alive.add((bid, t.get("trade_id")))
+            remaining[key] -= need
+
     for b in connected:
         live, gone = [], []
         for t in b.get("open_trades", []):
-            side = "short" if t.get("is_short") else "long"
-            try:
-                opened = datetime.strptime(t.get("open_date") or "", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                fresh = (now - opened).total_seconds() < FRESH_TRADE_GRACE_SEC
-            except ValueError:
-                fresh = False
-            if (t["pair"], side) in held or t.get("has_open_orders") or fresh:
-                live.append(t)
-            else:
-                gone.append(t)
+            (live if (b["id"], t.get("trade_id")) in alive else gone).append(t)
         if gone:
             b["open_trades"] = live
             b["closed_on_exchange"] = [t["pair"] for t in gone]
@@ -1315,7 +1343,7 @@ EXIT_REASON_KO = {
     "liquidation": "강제 청산 (청산가 도달)",
     "partial_exit": "부분 청산",
     # 봇이 아니라 거래소/사용자 쪽에서 포지션이 닫힌 경우
-    "sold_on_exchange": "거래소에서 직접 청산",
+    "sold_on_exchange": "수동 청산 (거래소 직접)",
     "timeout": "주문 시간 초과",
     "cancelled": "주문 취소",
 }
@@ -1326,6 +1354,12 @@ def exit_reason_ko(raw: str) -> str:
     if not raw:
         return "–"
     return EXIT_REASON_KO.get(raw, raw)
+
+
+# 봇 청산 기록과 계좌 실현손익(income)을 같은 청산으로 볼 시각 차이. 거래소에서 직접
+# 닫은 걸 봇이 나중에 reload 로 기록하면 봇 쪽은 주문 체결 시각, income 은 기록 시각이라
+# 2초까지 벌어지는 게 실측됐다(10/6 EGLD 12:42:10 vs 12:42:08).
+BOT_CLOSE_MATCH_SEC = range(-3, 4)
 
 
 def _bot_closed_keys() -> set:
@@ -1461,7 +1495,7 @@ def _fetch_manual_pnl_raw() -> tuple:
     bot_keys = _bot_closed_keys()
     manual = [
         x for x in raw
-        if not any((x["symbol"], x["time"] // 1000 + d) in bot_keys for d in (-1, 0, 1))
+        if not any((x["symbol"], x["time"] // 1000 + d) in bot_keys for d in BOT_CLOSE_MATCH_SEC)
     ]
     total = sum(float(x["income"]) for x in manual)
     result = (total, manual)
@@ -1552,7 +1586,7 @@ def fetch_manual_trade_history() -> list[dict]:
     for x in raw:
         sym = x["symbol"]
         sec = x["time"] // 1000
-        if any((sym, sec + d) in bot_keys for d in (-1, 0, 1)):
+        if any((sym, sec + d) in bot_keys for d in BOT_CLOSE_MATCH_SEC):
             continue  # 봇이 이미 기록한 청산
         if episodes and episodes[-1]["symbol"] == sym and x["time"] - episodes[-1]["last_time"] <= 5000:
             ep = episodes[-1]
@@ -1896,7 +1930,19 @@ def _backfill_notifications_locked() -> int:
                     "close_date": t["close_date"],
                 }
             )
+    # 봇 기록상 아직 열려 있는 페어의 최근 수동 청산은 곧 대조(_reconcile_bot_trades)로
+    # 그 봇의 청산이 되므로 "수동"으로 먼저 알리지 않는다. 10분이 지나도 안 바뀌면
+    # (대조 실패) 그때는 수동으로 알린다.
+    pending_bot_pairs = {
+        t["pair"].split(":")[0]
+        for _, trades in bot_trades_for_entries
+        for t in trades
+        if not t.get("close_date")
+    }
+    hold_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
     for t in fetch_manual_trade_history():
+        if t["pair"] in pending_bot_pairs and t["close_date"] >= hold_cutoff:
+            continue
         items.append(
             {
                 "bot_name": "수동",
@@ -1975,6 +2021,8 @@ def _backfill_notifications_loop() -> None:
     수동 거래도 몇 분 안에 알림이 오게 한다."""
     while True:
         try:
+            if _reconcile_bot_trades():
+                time.sleep(3)
             backfill_notifications()
         except Exception:  # noqa: BLE001
             pass
@@ -1994,7 +2042,78 @@ POSITION_WATCH_SEC = 5
 # 새 포지션이 생기면 이만큼 기다렸다가, 그때도 봇 거래가 아니면 수동 진입으로 알린다
 # (봇 진입은 웹훅이 먼저 처리한다).
 MANUAL_ENTRY_GRACE_SEC = 20
-BACKFILL_RECHECK_DELAYS = (3, 15, 60)
+# 청산 감지 뒤 몇 번 다시 본다. 봇 거래 대조(_reconcile_bot_trades)가 먼저 돌아야
+# 봇 포지션의 직접 청산이 "수동"으로 먼저 잡히지 않는다(RECONCILE_MIN_AGE_SEC 참고).
+BACKFILL_RECHECK_DELAYS = (2, 18, 45, 90)
+
+
+# 봇이 연 포지션을 거래소에서 직접 닫으면(2026-10-09 요청) 그 청산을 "수동"이 아니라
+# 그 봇의 거래로 기록한다 - freqtrade 의 /trades/{id}/reload 가 거래소 주문 내역에서
+# 그 청산 주문을 찾아 거래를 닫는다(사유 sold_on_exchange = "수동 청산", 실제 체결가로
+# 손익 계산, 봇 정지 중에도 동작). freqtrade 도 스스로 같은 복구를 하지만 포지션 정보를
+# 30분마다만 새로 읽어서, 그 사이 봇을 정지하면 거래가 영영 "보유 중"으로 남았다 -
+# 그러면 청산 기록이 없어 48시간 재진입 대기도 안 돌았다(10/8 RSI 6건).
+RECONCILE_MIN_AGE_SEC = 15   # 봇 자신의 청산이 처리될 시간을 준다(그 사이엔 손대지 않음)
+RECONCILE_RETRY_SEC = 300    # 같은 거래를 다시 시도하는 최소 간격
+_reconcile_tried: dict = {}  # (bot id, trade id) -> 마지막 시도 시각
+_position_gone_since: dict = {}  # (pair, side) -> 계좌에서 처음 안 보인 시각
+
+
+def _reconcile_bot_trades() -> int:
+    """봇 기록엔 열려 있는데 계좌엔 없는 포지션을 그 봇이 거래소 기록으로 닫게 한다."""
+    try:
+        rows = binance_signed("/fapi/v2/positionRisk")
+    except Exception:  # noqa: BLE001
+        return 0
+    held = set()
+    for p in rows:
+        amt = float(p.get("positionAmt") or 0)
+        if amt:
+            base = p["symbol"][:-4] if p["symbol"].endswith("USDT") else p["symbol"]
+            held.add((f"{base}/USDT:USDT", "short" if amt < 0 else "long"))
+    now = time.time()
+    fixed = 0
+    seen_gone = set()
+    for bot in BOTS:
+        try:
+            trades = call_bot(bot["url"], "/api/v1/status")
+        except Exception:  # noqa: BLE001
+            continue
+        for t in trades:
+            key = (t["pair"], "short" if t.get("is_short") else "long")
+            if key in held or t.get("has_open_orders"):
+                continue
+            seen_gone.add(key)
+            first = _position_gone_since.setdefault(key, now)
+            if now - first < RECONCILE_MIN_AGE_SEC:
+                continue
+            tk = (bot["id"], t["trade_id"])
+            if now - _reconcile_tried.get(tk, 0) < RECONCILE_RETRY_SEC:
+                continue
+            _reconcile_tried[tk] = now
+            # reload 는 그 페어에서 진입 이후 체결된 주문을 전부 이 거래에 붙인다. 계좌를
+            # 같이 쓰는 다른 봇이 나중에 같은 코인을 거래했으면 그 주문까지 섞이므로,
+            # 진입 1건 + 청산 1건만 있을 때만 한다(아니면 손대지 않고 수동으로 남긴다).
+            try:
+                base = t["pair"].split("/")[0]
+                orders = binance_signed("/fapi/v1/allOrders", {
+                    "symbol": f"{base}USDT", "startTime": int(t["open_timestamp"]) - 10_000,
+                })
+                filled = [o for o in orders if float(o.get("executedQty") or 0) > 0]
+                if len(filled) != 2:
+                    _reconcile_tried[tk] = float("inf")
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            try:
+                post_bot(bot["url"], f"/api/v1/trades/{t['trade_id']}/reload")
+                fixed += 1
+            except Exception:  # noqa: BLE001
+                pass
+    for k in list(_position_gone_since):
+        if k not in seen_gone:
+            del _position_gone_since[k]
+    return fixed
 
 
 def _bot_open_pairs() -> set:
@@ -2056,6 +2175,11 @@ def _position_watch_loop() -> None:
                     pass
         if recheck_at and now >= recheck_at[0]:
             recheck_at = [t for t in recheck_at if t > now]
+            try:
+                if _reconcile_bot_trades():
+                    time.sleep(3)  # reload 결과(청산 웹훅)가 먼저 들어오게
+            except Exception:  # noqa: BLE001
+                pass
             _manual_history_cache["ts"] = 0
             _manual_pnl_raw_cache["ts"] = 0
             try:
