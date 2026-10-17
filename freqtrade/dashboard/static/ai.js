@@ -53,7 +53,7 @@ function renderPredictionScore(pred) {
       <div class="ai-score-item"><div class="lbl">기준선: 항상 롱</div><div class="val">${aiPct(live.always_long)}</div></div>
       <div class="ai-score-item"><div class="lbl">기준선: 동전 던지기</div><div class="val">50%</div></div>
       <div class="ai-score-item"><div class="lbl">최근 30일</div><div class="val">${live30 ? aiPct(live30.acc) : "–"}</div></div>
-      <div class="ai-score-item"><div class="lbl">판단대로 했다면 (합계)</div><div class="val ${live.follow_ret_pct >= 0 ? "pos" : "neg"}">${live.follow_ret_pct >= 0 ? "+" : ""}${live.follow_ret_pct}%</div></div>`
+      <div class="ai-score-item"><div class="lbl" title="자금을 그날 예측한 코인들에 똑같이 나눠 하루씩 보유, 왕복 수수료 0.1% 반영, 레버리지 1배, 날마다 복리 (모의 계산)">판단대로 했다면 (${live.days ?? "-"}일 누적)</div><div class="val ${live.follow_ret_pct >= 0 ? "pos" : "neg"}">${live.follow_ret_pct >= 0 ? "+" : ""}${live.follow_ret_pct}%</div></div>`
     : `<div class="ai-score-empty">실전 기록 수집 중입니다 - 매일 09:10(한국시간)에 예측하고 다음날 같은 시각에 채점합니다.</div>`;
 
   const modelLine = m
@@ -81,6 +81,7 @@ function renderPredictionScore(pred) {
       <div class="ai-score-head">AI 예측 성적 <span class="ai-score-sub">매일 09:10(KST) 예측 · 다음날 자동 채점 · 매주 재학습</span></div>
       ${warnings.map((w) => `<div class="ai-score-warn">⚠ ${w}</div>`).join("")}
       <div class="ai-score-grid">${liveBlock}</div>
+      ${live ? `<div class="ai-score-model">※ '판단대로 했다면'은 자금을 그날 예측한 코인들에 똑같이 나눠 하루씩 보유하고 왕복 수수료 0.1%를 뺀 모의 누적 수익률입니다(레버리지 1배, 실제 매매 아님).</div>` : ""}
       <div class="ai-score-model">${modelLine}</div>
       ${pred.last_error ? `<div class="ai-score-warn">예측 작업 오류: ${pred.last_error}</div>` : ""}
       ${

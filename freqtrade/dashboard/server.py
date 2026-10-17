@@ -17,7 +17,9 @@ import hmac
 import json
 import os
 import re
+import sqlite3
 import statistics
+import subprocess
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -96,6 +98,13 @@ BOTS = [
      "reentry_cooldown_h": 48},
     {"id": "xsectmomentum", "name": "Momentum (횡단면 모멘텀)",
      "url": "http://127.0.0.1:8087", "leverage": 2,
+     # 정지하면 컨테이너까지 꺼서 서버 메모리(~200MB)를 아낀다(2026-10-17). 꺼져 있는
+     # 동안은 대시보드가 봇 DB를 직접 읽어 탭/거래 기록을 그대로 보여주고, 시작 버튼을
+     # 누르면 컨테이너를 켠 뒤 봇을 시작한다(_offline_api, api_bot_control 참고).
+     "offline_when_stopped": True,
+     "container": "freqtrade-xsect-momentum-futures",
+     "db_path": "user_data/xsect_momentum_live.sqlite",
+     "config_path": "config_xsect_momentum_futures.json",
      "max_hold_h": 72, "signal_kind": "xsect_momentum",
      "timeframe": "1d", "lookback": 14, "top_k": 3,
      # 익절폭이 고정값이 아니라 종목별 변동성 스케일링이라(전략의
@@ -365,14 +374,173 @@ def whoami():
 
 
 def call_bot(base_url: str, path: str, params: dict | None = None):
-    resp = requests.get(
-        f"{base_url}{path}",
-        params=params or {},
-        auth=(USERNAME, PASSWORD),
-        timeout=4,
-    )
-    resp.raise_for_status()
-    return resp.json()
+    try:
+        resp = requests.get(
+            f"{base_url}{path}",
+            params=params or {},
+            auth=(USERNAME, PASSWORD),
+            timeout=4,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+        bot = next((b for b in BOTS if b["url"] == base_url), None)
+        if bot is not None and _offline_bots.get(bot["id"]):
+            return _offline_api(bot, path, params or {})
+        raise
+
+
+# ---------------------------------------------------------------------------
+# 꺼둔 봇 (컨테이너 정지) - 2026-10-17
+#
+# 서버 메모리가 911MB 뿐이라(스왑 1.3GB 사용 중) 쓰지 않는 봇은 컨테이너째 꺼둔다.
+# 꺼진 동안 그 봇의 API 를 부르면 연결이 거부되는데, 그때 봇 DB(sqlite)를 직접 읽어
+# 대시보드가 쓰는 몇 가지 엔드포인트를 흉내 낸다 - 나머지 코드는 봇이 켜져 있을 때와
+# 똑같이 동작한다(탭, 거래 기록, 손익 그래프, 수동/봇 청산 구분, 진입 조건 현황).
+# 대시보드가 일부러 끈 봇만 이렇게 처리한다(_offline_bots). 예기치 않게 죽은 봇은
+# 그대로 연결 실패로 남아 헬스체크가 텔레그램으로 알린다.
+# ---------------------------------------------------------------------------
+OFFLINE_BOTS_FILE = ROOT / "offline_bots.json"
+BOT_START_TIMEOUT_SEC = 240
+
+
+def _load_offline_bots() -> dict:
+    try:
+        d = json.loads(OFFLINE_BOTS_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+    # "켜는 중" 상태로 대시보드가 재시작됐으면 그 작업은 끊겼다 - 꺼진 것으로 본다
+    return {k: "offline" for k in d}
+
+
+_offline_bots: dict = _load_offline_bots()  # bot id -> "offline" | "starting"
+
+
+def _save_offline_bots() -> None:
+    try:
+        OFFLINE_BOTS_FILE.write_text(json.dumps(_offline_bots), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _docker(*args: str, timeout: int = 90) -> subprocess.CompletedProcess:
+    return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout)
+
+
+def _ms(dt_str: str | None) -> int | None:
+    if not dt_str:
+        return None
+    return int(datetime.strptime(dt_str[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+
+def _offline_trades(bot: dict) -> list[dict]:
+    path = ROOT.parent / bot["db_path"]
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute("select * from trades order by id").fetchall()
+    finally:
+        con.close()
+    out = []
+    for r in rows:
+        od = (r["open_date"] or "")[:19]
+        cd = (r["close_date"] or "")[:19] or None
+        is_open = bool(r["is_open"])
+        cp = r["close_profit"]
+        out.append({
+            "trade_id": r["id"], "pair": r["pair"], "is_open": is_open, "is_short": bool(r["is_short"]),
+            "amount": r["amount"], "stake_amount": r["stake_amount"], "leverage": r["leverage"],
+            "open_rate": r["open_rate"], "current_rate": r["open_rate"], "close_rate": r["close_rate"],
+            "open_date": od, "open_timestamp": _ms(od), "close_date": cd, "close_timestamp": _ms(cd),
+            "close_profit": cp, "close_profit_pct": round(cp * 100, 2) if cp is not None else None,
+            "close_profit_abs": r["close_profit_abs"], "exit_reason": r["exit_reason"],
+            # 꺼져 있으니 현재가를 모른다 - 미실현손익은 0으로 둔다
+            "profit_abs": 0.0 if is_open else r["close_profit_abs"], "profit_pct": 0.0,
+            "stop_loss_abs": r["stop_loss"], "liquidation_price": r["liquidation_price"],
+            "has_open_orders": False, "enter_tag": r["enter_tag"],
+        })
+    return out
+
+
+def _offline_api(bot: dict, path: str, params: dict):
+    """꺼둔 봇의 freqtrade API 응답을 DB/설정 파일로 흉내 낸다(대시보드가 쓰는 것만)."""
+    if path == "/api/v1/show_config":
+        return {"state": "starting" if _offline_bots.get(bot["id"]) == "starting" else "stopped",
+                "dry_run": False, "offline": True}
+    if path == "/api/v1/whitelist":
+        cfg = json.loads((ROOT.parent / bot["config_path"]).read_text(encoding="utf-8"))
+        return {"whitelist": cfg.get("exchange", {}).get("pair_whitelist", [])}
+    if path == "/api/v1/locks":
+        return {"locks": []}
+    if path == "/api/v1/balance":
+        return {"currencies": [], "total": 0, "starting_capital": 0}
+    trades = _offline_trades(bot)
+    if path == "/api/v1/status":
+        return [t for t in trades if t["is_open"]]
+    if path == "/api/v1/trades":
+        return {"trades": trades, "trades_count": len(trades)}
+    closed = sorted((t for t in trades if not t["is_open"]), key=lambda t: t["close_date"] or "")
+    if path == "/api/v1/profit":
+        total = sum(t["close_profit_abs"] or 0 for t in closed)
+        eq = peak = mdd = 0.0
+        for t in closed:
+            eq += t["close_profit_abs"] or 0
+            peak = max(peak, eq)
+            mdd = max(mdd, peak - eq)
+        wins = sum(1 for t in closed if (t["close_profit_abs"] or 0) > 0)
+        return {"profit_all_coin": total, "profit_closed_coin": total, "profit_closed_percent": 0,
+                "trade_count": len(trades), "winrate": wins / len(closed) if closed else 0,
+                "max_drawdown_abs": mdd, "max_drawdown": 0}
+    if path == "/api/v1/daily":
+        days = int(params.get("timescale", 14))
+        by_day: dict = {}
+        for t in closed:
+            d = t["close_date"][:10]
+            by_day[d] = by_day.get(d, 0.0) + (t["close_profit_abs"] or 0)
+        start_bal = (_starting_capital_cache.get(bot["id"]) or {}).get("value", 0)
+        today = datetime.now(timezone.utc).date()
+        return {"data": [
+            {"date": (today - timedelta(days=i)).isoformat(),
+             "abs_profit": by_day.get((today - timedelta(days=i)).isoformat(), 0.0),
+             "starting_balance": start_bal}
+            for i in range(days)  # freqtrade 처럼 최신 날짜가 먼저
+        ]}
+    raise RuntimeError(f"꺼둔 봇에서는 {path} 를 쓸 수 없습니다")
+
+
+def _start_offline_bot(bot: dict) -> None:
+    """컨테이너를 켜고 API 가 뜨면 봇을 시작한다(백그라운드). 실패하면 다시 꺼진 상태로."""
+    try:
+        r = _docker("start", bot["container"])
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.strip() or "docker start 실패")
+        deadline = time.time() + BOT_START_TIMEOUT_SEC
+        while time.time() < deadline:
+            try:
+                requests.get(f"{bot['url']}/api/v1/ping", timeout=3).raise_for_status()
+                post_bot(bot["url"], "/api/v1/start")
+                _offline_bots.pop(bot["id"], None)
+                _save_offline_bots()
+                return
+            except Exception:  # noqa: BLE001
+                time.sleep(5)
+        raise RuntimeError(f"{BOT_START_TIMEOUT_SEC}초 안에 봇 API 가 뜨지 않았습니다")
+    except Exception as exc:  # noqa: BLE001
+        _offline_bots[bot["id"]] = "offline"
+        _save_offline_bots()
+        send_telegram(
+            f"[{bot['name']}] [봇 시작 실패]\n컨테이너를 켜거나 봇을 시작하지 못했습니다.\n"
+            f"사유: {str(exc)[:200]}\n====================="
+        )
+
+
+def _stop_offline_bot(bot: dict) -> None:
+    r = _docker("stop", bot["container"])
+    if r.returncode != 0:
+        send_telegram(
+            f"[{bot['name']}] [컨테이너 정지 실패]\n봇은 정지됐지만 컨테이너를 끄지 못했습니다.\n"
+            f"사유: {(r.stderr or '').strip()[:200]}\n====================="
+        )
 
 
 # XSectMomentum의 익절폭을 대시보드에서 재현하기 위한 캐시. 전략의
@@ -1109,6 +1277,18 @@ def api_bot_control(bot_id: str, action: str):
     if bot is None:
         return jsonify({"ok": False, "error": "봇을 찾을 수 없습니다"}), 404
 
+    # 컨테이너째 꺼둔 봇: 시작이면 컨테이너부터 켠다(1~2분 걸려 백그라운드로)
+    if bot.get("offline_when_stopped") and _offline_bots.get(bot_id):
+        if action == "stop":
+            return jsonify({"ok": True, "state": "stopped", "message": "이미 꺼져 있습니다"})
+        if _offline_bots[bot_id] == "starting":
+            return jsonify({"ok": True, "state": "starting", "message": "이미 켜는 중입니다"})
+        _offline_bots[bot_id] = "starting"
+        _save_offline_bots()
+        threading.Thread(target=_start_offline_bot, args=(bot,), daemon=True).start()
+        return jsonify({"ok": True, "state": "starting",
+                        "message": "컨테이너를 켜는 중입니다. 1~2분 뒤 자동으로 봇이 시작됩니다."})
+
     try:
         # 정지 요청인데 열린 포지션이 있으면 경고를 같이 돌려준다(막지는 않음)
         warning = None
@@ -1126,10 +1306,17 @@ def api_bot_control(bot_id: str, action: str):
 
         result = post_bot(bot["url"], f"/api/v1/{action}")
         state = "running" if action == "start" else "stopped"
+        message = result.get("status", "")
+        if action == "stop" and bot.get("offline_when_stopped"):
+            # 헬스체크가 장애로 오인하지 않게 먼저 "꺼둠"으로 표시한 뒤 컨테이너를 끈다
+            _offline_bots[bot_id] = "offline"
+            _save_offline_bots()
+            threading.Thread(target=_stop_offline_bot, args=(bot,), daemon=True).start()
+            message = "봇을 정지하고 컨테이너도 껐습니다(서버 메모리 절약). 시작 버튼으로 다시 켤 수 있습니다."
         return jsonify({
             "ok": True,
             "state": state,
-            "message": result.get("status", ""),
+            "message": message,
             "warning": warning,
         })
     except Exception as exc:  # noqa: BLE001
@@ -2075,6 +2262,8 @@ def _reconcile_bot_trades() -> int:
     fixed = 0
     seen_gone = set()
     for bot in BOTS:
+        if _offline_bots.get(bot["id"]):
+            continue  # 꺼둔 봇은 reload 를 받을 API 가 없다
         try:
             trades = call_bot(bot["url"], "/api/v1/status")
         except Exception:  # noqa: BLE001
@@ -2204,6 +2393,8 @@ _bot_health_state: dict = {}
 
 def _check_bot_health_once() -> None:
     for bot in BOTS:
+        if _offline_bots.get(bot["id"]):
+            continue  # 일부러 꺼둔(또는 켜는 중인) 봇 - 장애 아님
         state = _bot_health_state.setdefault(bot["id"], {"failures": 0, "down": False})
         error_text = None
         try:

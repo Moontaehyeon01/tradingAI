@@ -165,6 +165,23 @@ body {
 }
 .coin-chart-back:hover { border-color: var(--blue); background: var(--card-hover); }
 .tv-chart-tall { height: 660px; }
+/* 종목 차트 위젯들(charts.js 의 coinSlots): 한 자리에 겹쳐 두고 선택된 것만 보인다.
+   visibility 로 숨겨야 크기가 유지돼서 다시 보일 때 바로 제 크기로 그려진다. */
+#tvChartCoin { position: relative; background: var(--panel); }
+#tvChartCoin::before {
+  content: "차트 불러오는 중…";
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-faint); font-size: 12px;
+}
+.tv-coin-slot { position: absolute; inset: 0; visibility: hidden; }
+.tv-coin-slot.active { visibility: visible; }
+/* 오른쪽 차트 패널 폭: 기본 560px 은 종목 차트(세로 660px)가 너무 세로로 길쭉해서
+   화면의 42%(최대 760px)로 넓혔다. BTC·QQQ 차트도 같은 폭(2026-10-16). 세로 높이는 그대로.
+   좁은 화면(1400px 이하)은 위 미디어쿼리에서 숨기거나 전체 화면으로 띄운다. */
+@media (min-width: 1401px) {
+  .side-panel { width: min(760px, 42vw); }
+}
 
 /* ===== 주요 뉴스 한 줄 (headlines.js) ===== */
 .headline-bar {

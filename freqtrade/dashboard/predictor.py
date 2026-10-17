@@ -506,6 +506,26 @@ def loop(get_headlines, api_key: str) -> None:
 
 
 # --------------------------------------------------------------- 화면용 ----
+# "판단대로 했다면" 수익률 계산용 왕복 수수료(하루에 한 번 진입·청산)
+FOLLOW_FEE_RT = 0.001
+
+
+def _follow_portfolio_ret(rows: list[dict]) -> float:
+    """판단대로 매일 했다면의 누적 수익률(%). 자금을 그날 예측한 코인들에 똑같이
+    나눠 하루 보유하고, 왕복 수수료를 빼고, 날마다 복리로 굴린다(레버리지 1배).
+
+    2026-10-16: 예전엔 코인별 하루 수익률을 그냥 다 더했는데(+42.77%), 그건 매일
+    4개 코인에 각각 전 재산을 건 셈이라 실제 가능한 수익률보다 약 4배 부풀려졌다."""
+    by_day: dict = {}
+    for r in rows:
+        by_day.setdefault(r["date"], []).append(r["follow_ret_pct"] / 100)
+    eq = 1.0
+    for d in sorted(by_day):
+        day = by_day[d]
+        eq *= 1 + sum(day) / len(day) - FOLLOW_FEE_RT
+    return (eq - 1) * 100
+
+
 def _scoreboard(rows: list[dict]) -> dict | None:
     if not rows:
         return None
@@ -513,7 +533,8 @@ def _scoreboard(rows: list[dict]) -> dict | None:
     acc = sum(1 for r in rows if r["correct"]) / n
     long_acc = sum(1 for r in rows if r["actual"] == "상승") / n
     return {"n": n, "acc": round(acc * 100, 1), "always_long": round(long_acc * 100, 1),
-            "coin_flip": 50.0, "follow_ret_pct": round(sum(r["follow_ret_pct"] for r in rows), 2),
+            "coin_flip": 50.0, "follow_ret_pct": round(_follow_portfolio_ret(rows), 2),
+            "days": len({r["date"] for r in rows}),
             "beats_baseline": acc > max(0.5, long_acc)}
 
 
