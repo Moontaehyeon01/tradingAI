@@ -125,6 +125,11 @@ XSectMomentumStrategy — 횡단면 모멘텀 (시장중립 롱숏)
     분리했다(동작은 그대로). 같은 규칙에 RSI(14) 순위만 바꾼 XSectRsiStrategy가
     이 둘을 덮어써서 쓴다.
 
+  2026-10-17 계좌 겹침 방지를 RSI 봇에서 이쪽(부모)으로 옮겼다. 두 봇이 같은 바이낸스
+    계좌(단방향 모드)를 쓰므로 같은 종목을 잡으면 포지션이 하나로 합쳐진다. 계좌에 이미
+    다른 봇/수동 포지션이 있는 종목은 건너뛰고 다음 순위로 채운다(_foreign_pairs).
+    모멘텀 봇을 다시 켜도 RSI 봇이 들고 있는 종목엔 들어가지 않게 하려는 것.
+
 설계
   - 매일(1d 봉) 감시 페어 전체의 lookback일 수익률을 계산해 순위를 매긴다
     (하루 중 자정+2분 이후 첫 계산 결과를 그날 내내 고정 - 위 2026-09-14 주석 참고)
@@ -137,6 +142,7 @@ XSectMomentumStrategy — 횡단면 모멘텀 (시장중립 롱숏)
   - 신규 진입은 매일 09:00~10:00 KST(순위 확정 후)에만 - 장중에 빈 자리는 다음날까지 비워둠
   - 손절은 안전망만 (개별 손절이 아니라 포트폴리오 분산으로 위험을 관리하는 전략)
 """
+import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -145,6 +151,8 @@ from pandas import DataFrame
 
 from freqtrade.persistence import Trade
 from freqtrade.strategy import IStrategy, IntParameter
+
+logger = logging.getLogger(__name__)
 
 
 class XSectMomentumStrategy(IStrategy):
@@ -219,6 +227,8 @@ class XSectMomentumStrategy(IStrategy):
     # 진입 판단 자체는 하루 종일 돌기 때문에, 이게 없으면 수동 청산·장중 익절로
     # 자리가 빈 순간 다음 순위 종목이 아무 때나 들어간다(2026-10-06 확인).
     ENTRY_WINDOW = timedelta(hours=1)
+    # 계좌 포지션 조회 주기 - 진입 판단(매 루프)마다 거래소를 부르지 않게 캐시한다.
+    FOREIGN_REFRESH = timedelta(seconds=60)
 
     def __init__(self, config: dict) -> None:
         super().__init__(config)
@@ -235,6 +245,10 @@ class XSectMomentumStrategy(IStrategy):
         self._ranked_date = None
         self._tp_by_pair: dict = {}
         self._entries_open = False
+        # 이 봇 거래가 아닌데 계좌에 열려 있는 포지션의 페어(다른 봇/수동)
+        self._foreign_pairs: set = set()
+        self._foreign_checked_at: Optional[datetime] = None
+        self._foreign_ok = False
 
     def leverage(self, pair, current_time, current_rate, proposed_leverage,
                  max_leverage, entry_tag, side, **kwargs) -> float:
@@ -244,7 +258,30 @@ class XSectMomentumStrategy(IStrategy):
     # 순위 계산: freqtrade 는 페어별로 독립 호출되므로, 전체를 보는 계산은
     # 루프 시작 시점에 한 번만 해두고 각 페어가 그 결과를 참조한다.
     # ------------------------------------------------------------------
+    def _account_positions(self, pair: Optional[str] = None) -> set:
+        """계좌에 열린 포지션의 페어 중 이 봇 거래가 아닌 것. 조회 실패 시 예외."""
+        positions = self.dp._exchange.fetch_positions(pair)
+        own = {t.pair for t in Trade.get_open_trades()}
+        return {
+            p["symbol"] for p in positions
+            if p.get("symbol") and float(p.get("contracts") or 0) != 0
+        } - own
+
+    def _refresh_foreign_pairs(self, current_time: datetime) -> None:
+        if (self._foreign_checked_at is not None
+                and current_time - self._foreign_checked_at < self.FOREIGN_REFRESH):
+            return
+        self._foreign_checked_at = current_time
+        try:
+            self._foreign_pairs = self._account_positions()
+            self._foreign_ok = True
+        except Exception as exc:  # noqa: BLE001
+            # 직전 목록은 유지하되 진입은 confirm_trade_entry 에서 막는다
+            self._foreign_ok = False
+            logger.warning("계좌 포지션 조회 실패 - 신규 진입 보류: %s", exc)
+
     def bot_loop_start(self, current_time: datetime, **kwargs) -> None:
+        self._refresh_foreign_pairs(current_time)
         # 익절폭은 순위와 무관하게 매 루프 최신화한다 - 오늘 순위에 안 들어도
         # 이미 열려있는 포지션의 익절폭은 계속 최신으로 유지해야 한다.
         self._tp_by_pair = self._compute_tp_by_pair()
@@ -275,8 +312,11 @@ class XSectMomentumStrategy(IStrategy):
         return picked
 
     def _is_blocked(self, pair: str, side: str, now: datetime) -> bool:
-        """순위권이어도 후보에서 건너뛸 종목인지 (하위 클래스가 조건을 더한다)."""
-        return self._in_reentry_cooldown(pair, now) or self.is_pair_locked(pair, side=side)
+        """순위권이어도 후보에서 건너뛸 종목인지. 재진입 대기 / freqtrade 잠금 /
+        계좌에 다른 봇·수동 포지션이 있는 종목(다음 순위가 대신 후보가 된다)."""
+        return (pair in self._foreign_pairs
+                or self._in_reentry_cooldown(pair, now)
+                or self.is_pair_locked(pair, side=side))
 
     def _in_reentry_cooldown(self, pair: str, now: datetime) -> bool:
         since = now - timedelta(hours=self.reentry_cooldown_hours)
@@ -451,4 +491,16 @@ class XSectMomentumStrategy(IStrategy):
         open_same_side = sum(
             1 for t in Trade.get_open_trades() if t.is_short == is_short_entry
         )
-        return open_same_side < self.top_k.value
+        if open_same_side >= self.top_k.value:
+            return False
+        if not self._foreign_ok:
+            return False
+        # 캐시(최대 60초) 사이에 다른 봇이 같은 종목을 잡았을 수 있어 주문 직전에 다시 확인
+        try:
+            if self._account_positions(pair):
+                logger.info("%s: 계좌에 다른 포지션이 있어 진입 안 함", pair)
+                return False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("%s: 계좌 포지션 조회 실패 - 진입 안 함: %s", pair, exc)
+            return False
+        return True
