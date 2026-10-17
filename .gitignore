@@ -34,3 +34,4 @@ freqtrade/dashboard/predictor_state.json
 freqtrade/dashboard/predictions.jsonl
 freqtrade/dashboard/news_scores.json
 freqtrade/dashboard/major_news.json
+freqtrade/dashboard/offline_bots.json

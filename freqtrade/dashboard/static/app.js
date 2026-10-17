@@ -10,9 +10,16 @@ const COIN_COLORS = {
 let equityChart = null;
 let sideDonut = null;
 let lastSummary = null;
+// 기간(14/30/60일)별로 마지막으로 받은 요약. 기간 버튼을 누르면 서버 응답을 기다리지
+// 않고 이걸로 그래프를 바로 바꾼 뒤, 새 데이터가 오면 다시 그린다(2026-10-17 - 버튼을
+// 눌러도 그래프가 한참 뒤에 바뀌던 문제).
+const summaryByDays = {};
+// 폴링(4초)과 버튼 클릭으로 요청이 겹칠 때, 늦게 도착한 옛 응답이 새 화면을 덮지 않게
+let refreshSeq = 0;
+let appliedSeq = 0;
 // 봇 두 개를 좌우로 나눠 보여주면 표가 좁아져서 탭으로 하나씩 전체 폭으로
-// 보여준다. 기본값은 처음 굴리던 Momentum.
-let selectedBotId = "xsectmomentum";
+// 보여준다. 기본값은 지금 주력으로 굴리는 RSI 봇(2026-10-17 Momentum 에서 변경).
+let selectedBotId = "xsectrsi";
 let lastSeenAlertTime = null; // 새로 도착한 알림만 구분해서 소리 재생하기 위한 기준점
 let audioCtx = null;
 // 누적손익추이 그래프 기간. 서버가 14/30/60 만 허용하므로(api_summary 참고)
@@ -575,6 +582,12 @@ document.addEventListener("click", (e) => {
    freqtrade의 state는 running / stopped / paused 세 가지.
    running이 아니면 "정지됨"으로 보고 시작 버튼을 띄운다. */
 function renderBotPower(bot) {
+  // 컨테이너째 꺼둔 봇을 켜는 중(1~2분) - 버튼을 잠가 중복 요청을 막는다
+  if (bot.state === "starting") {
+    return `
+    <span class="state-badge off">켜는 중…</span>
+    <button class="power-btn start" disabled>켜는 중</button>`;
+  }
   const running = bot.state === "running";
   const label = running ? "정지" : "시작";
   const cls = running ? "power-btn stop" : "power-btn start";
@@ -609,7 +622,9 @@ async function onBotPowerClick(botId, action) {
     } else if (!data.ok) {
       window.alert(`실패: ${data.error || "알 수 없는 오류"}`);
     } else if (data.warning) {
-      window.alert(`정지했습니다.\n\n주의: ${data.warning}`);
+      window.alert(`정지했습니다.\n\n주의: ${data.warning}${data.message ? `\n\n${data.message}` : ""}`);
+    } else if (data.state === "starting" || (isStop && data.message && data.message.includes("컨테이너"))) {
+      window.alert(data.message);
     }
   } catch (err) {
     window.alert(`요청 실패: ${err}`);
@@ -779,8 +794,21 @@ document.getElementById("equityPeriodToggle")?.addEventListener("click", (e) => 
   document
     .querySelectorAll("#equityPeriodToggle .period-btn")
     .forEach((b) => b.classList.toggle("active", b === btn));
+  if (summaryByDays[days]) renderEquityChart(summaryByDays[days]);
   refresh();
 });
+
+// 처음 열 때 다른 기간도 미리 받아둔다 - 첫 클릭부터 바로 바뀌게
+async function prefetchOtherPeriods() {
+  for (const d of [14, 30, 60]) {
+    if (d === equityDays || summaryByDays[d]) continue;
+    try {
+      summaryByDays[d] = await fetchJSON(`/api/summary?days=${d}`);
+    } catch {
+      /* 실패하면 버튼을 눌렀을 때 받아온다 */
+    }
+  }
+}
 
 /* ---------------- Alerts feed ---------------- */
 
@@ -939,24 +967,32 @@ async function refresh() {
   // Promise.all은 하나만 실패해도 전부 실패 처리돼서, 예를 들어 시세 API 하나만
   // 잠깐 흔들려도 이미 잘 받아온 봇 데이터까지 화면에 반영을 못 함.
   // allSettled로 바꿔서 성공한 것만이라도 반영하고, 실패한 것만 원인을 구분해서 알려줌.
+  const seq = ++refreshSeq;
+  const days = equityDays;
+  // 로그인 상태 확인도 같이 출발시킨다(예전엔 위 세 요청이 끝난 뒤에 따로 기다렸다)
+  const authP = refreshAuthState();
   const [summaryRes, tickersRes, alertsRes] = await Promise.allSettled([
-    fetchJSON(`/api/summary?days=${equityDays}`),
+    fetchJSON(`/api/summary?days=${days}`),
     fetchJSON("/api/tickers"),
     fetchJSON("/api/notifications"),
   ]);
+  if (summaryRes.status === "fulfilled") summaryByDays[days] = summaryRes.value;
+  if (seq < appliedSeq) return; // 이미 더 최근 요청의 결과가 화면에 반영됨
+  appliedSeq = seq;
 
   const failures = [summaryRes, tickersRes, alertsRes].filter((r) => r.status === "rejected");
   // 조회용 API는 이제 로그인 없이도 열리므로, 여기서 401이 나면 서버 설정 문제다.
   const authFailed = failures.some((r) => r.reason?.status === 401);
 
-  await refreshAuthState();
+  await authP;
 
   if (summaryRes.status === "fulfilled") {
     const summary = summaryRes.value;
     lastSummary = summary;
     renderMode(summary);
     renderStats(summary);
-    renderEquityChart(summary);
+    // 요청 도중 기간 버튼이 바뀌었으면 그래프는 지금 선택된 기간의 데이터로 그린다
+    renderEquityChart(days === equityDays ? summary : summaryByDays[equityDays] || summary);
     renderDonut(summary);
     renderPositions(summary);
     renderHistory(summary);
@@ -985,7 +1021,7 @@ async function refresh() {
     `마지막 업데이트: ${new Date().toLocaleTimeString("ko-KR")}`;
 }
 
-refresh();
+refresh().then(prefetchOtherPeriods);
 setInterval(refresh, REFRESH_MS);
 
 /* ---------------- 접이식 패널 ----------------
