@@ -669,6 +669,16 @@ function renderBotCard(bots, selectedBotId) {
       </div>`;
   }
 
+  // 지금 들고 있는 포지션의 미실현 손익 합계(2026-10-18). %는 투입 증거금 합계 대비라
+  // 포지션 표의 종목별 손익 %(레버리지 반영)와 같은 기준이다.
+  const openTrades = bot.open_trades || [];
+  const openAbs = openTrades.reduce((a, t) => a + (t.profit_abs || 0), 0);
+  const openStake = openTrades.reduce((a, t) => a + (t.stake_amount || 0), 0);
+  const openPct = openStake ? (openAbs / openStake) * 100 : 0;
+  const openStat = openTrades.length
+    ? `<div class="v ${pnlClass(openAbs)}">${fmtPct(openPct)}<span class="v-sub">${fmtUsd(openAbs)} USDT · ${openTrades.length}개</span></div>`
+    : `<div class="v neutral">–<span class="v-sub">보유 포지션 없음</span></div>`;
+
   return `
     <div class="bot-card">
       <div class="bot-card-head">
@@ -681,6 +691,7 @@ function renderBotCard(bots, selectedBotId) {
       <div class="mini-stats">
         <div class="mini-stat"><div class="l">잔고</div><div class="v">$${bot.balance_total.toFixed(2)}</div></div>
         <div class="mini-stat"><div class="l">총손익</div><div class="v ${pnlClass(bot.profit_all_abs)}">${fmtPct(bot.profit_all_pct)}<span class="v-sub">${fmtUsd(bot.profit_all_abs)} USDT</span></div></div>
+        <div class="mini-stat"><div class="l">보유 포지션 손익</div>${openStat}</div>
         <div class="mini-stat"><div class="l">승률</div><div class="v">${(bot.winrate * 100).toFixed(1)}%</div></div>
         <div class="mini-stat"><div class="l">MDD</div><div class="v neg">${(bot.max_drawdown * 100).toFixed(2)}%</div></div>
       </div>
