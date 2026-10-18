@@ -795,7 +795,7 @@ body {
 
 .mini-stats {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr); /* 잔고 / 총손익 / 보유 포지션 손익 / 승률 / MDD */
   gap: 1px;
   background: var(--border);
 }
