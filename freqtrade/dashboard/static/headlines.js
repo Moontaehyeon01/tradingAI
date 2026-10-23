@@ -25,6 +25,15 @@ function headlineAgo(e) {
   return timeAgo((e.time || "").slice(0, 19));
 }
 
+// 제목 오른쪽 끝의 호재/악재 표시(서버 GPT 분류). 호재 = 롱 우세, 악재 = 숏 우세.
+function directionBadge(e) {
+  const d = e.direction;
+  if (d === "호재") return '<span class="hl-dir up">호재 · 롱</span>';
+  if (d === "악재") return '<span class="hl-dir down">악재 · 숏</span>';
+  if (d === "중립") return '<span class="hl-dir flat">중립</span>';
+  return "";
+}
+
 function headlineBadge(e) {
   const lvl = e.importance >= 5 ? "hl-lvl5" : "hl-lvl4";
   return `<span class="hl-cat ${lvl}">${escHtml(e.category)}</span>`;
@@ -50,6 +59,7 @@ function renderHeadlineBar() {
        ${headlineBadge(e)}
        <a class="hl-text" href="${escHtml(e.link)}" target="_blank" rel="noopener noreferrer"
           title="${escHtml(e.impact)}">${escHtml(e.headline)}</a>
+       ${directionBadge(e)}
        <span class="hl-meta">${escHtml(e.source)} · ${headlineAgo(e)}</span>
      </span>
      ${
@@ -79,6 +89,7 @@ function renderHeadlineList() {
           ${headlineBadge(e)}
           <div class="hl-row-body">
             <a class="hl-row-title" href="${escHtml(e.link)}" target="_blank" rel="noopener noreferrer">${escHtml(e.headline)}</a>
+            ${directionBadge(e)}
             <div class="hl-row-impact">${escHtml(e.impact)}</div>
           </div>
           <span class="hl-meta">${escHtml(e.source)} · ${headlineAgo(e)}</span>
@@ -102,6 +113,7 @@ function renderAiEvents() {
         <div class="ai-event-head">
           ${headlineBadge(e)}
           <span class="ai-event-title">${escHtml(e.headline)}</span>
+          ${directionBadge(e)}
           <span class="ai-event-meta">${escHtml(e.source)} · ${headlineAgo(e)}</span>
         </div>
         <div class="ai-event-impact">${escHtml(e.impact)}</div>
