@@ -494,14 +494,17 @@ def _offline_api(bot: dict, path: str, params: dict):
     if path == "/api/v1/daily":
         days = int(params.get("timescale", 14))
         by_day: dict = {}
+        cnt: dict = {}
         for t in closed:
             d = t["close_date"][:10]
             by_day[d] = by_day.get(d, 0.0) + (t["close_profit_abs"] or 0)
+            cnt[d] = cnt.get(d, 0) + 1
         start_bal = (_starting_capital_cache.get(bot["id"]) or {}).get("value", 0)
         today = datetime.now(timezone.utc).date()
         return {"data": [
             {"date": (today - timedelta(days=i)).isoformat(),
              "abs_profit": by_day.get((today - timedelta(days=i)).isoformat(), 0.0),
+             "trade_count": cnt.get((today - timedelta(days=i)).isoformat(), 0),
              "starting_balance": start_bal}
             for i in range(days)  # freqtrade 처럼 최신 날짜가 먼저
         ]}
@@ -519,6 +522,7 @@ def _start_offline_bot(bot: dict) -> None:
             try:
                 requests.get(f"{bot['url']}/api/v1/ping", timeout=3).raise_for_status()
                 post_bot(bot["url"], "/api/v1/start")
+                _set_user_stopped(bot["id"], False)
                 _offline_bots.pop(bot["id"], None)
                 _save_offline_bots()
                 return
@@ -1094,7 +1098,7 @@ def fetch_bot_summary(bot: dict, days: int = 14) -> dict:
         # "가장 오래된" 거래들이 잘려 들어온다. 넉넉히 받아서 아래에서
         # close_date 기준으로 직접 재정렬한다.
         recent = call_bot(bot["url"], "/api/v1/trades", {"limit": 500})
-        # 누적손익추이 그래프의 기간 선택(14/30/60일)에 맞춰 조회한다.
+        # 누적손익추이 그래프의 기간 선택(7/14/30/60일)에 맞춰 조회한다.
         daily = call_bot(bot["url"], "/api/v1/daily", {"timescale": days})
         config = call_bot(bot["url"], "/api/v1/show_config")
 
@@ -1244,6 +1248,8 @@ def fetch_bot_summary(bot: dict, days: int = 14) -> dict:
                         "date": d["date"],
                         "abs_profit": d.get("abs_profit", 0),
                         "starting_balance": d.get("starting_balance", 0),
+                        # 그날 청산된 거래 수 - 일별 손익 그래프 툴팁용
+                        "trade_count": d.get("trade_count", 0),
                     }
                     for d in reversed(daily.get("data", []))
                 ],
@@ -1307,6 +1313,7 @@ def api_bot_control(bot_id: str, action: str):
         result = post_bot(bot["url"], f"/api/v1/{action}")
         state = "running" if action == "start" else "stopped"
         message = result.get("status", "")
+        _set_user_stopped(bot_id, action == "stop")
         if action == "stop" and bot.get("offline_when_stopped"):
             # 헬스체크가 장애로 오인하지 않게 먼저 "꺼둠"으로 표시한 뒤 컨테이너를 끈다
             _offline_bots[bot_id] = "offline"
@@ -1386,7 +1393,7 @@ def api_summary():
     # 누적손익추이 그래프의 기간 선택. 정해둔 값 밖이면(URL 조작 등) 기본값으로
     # 조용히 되돌린다 - 임의의 timescale 을 그대로 각 봇에 흘려보내고 싶지 않다.
     days = request.args.get("days", 14, type=int)
-    if days not in (14, 30, 60):
+    if days not in (7, 14, 30, 60):
         days = 14
 
     bots = [fetch_bot_summary(b, days=days) for b in BOTS]
@@ -1706,9 +1713,12 @@ def fetch_manual_pnl(days: int = 14) -> dict:
         return {"total": None, "daily": []}
 
     by_day: dict = {}
+    closes_by_day: dict = {}
     for x in manual:
         d = datetime.fromtimestamp(x["time"] / 1000, timezone.utc).date()
         by_day[d] = by_day.get(d, 0.0) + float(x["income"])
+        # 부분체결로 같은 청산이 여러 줄이라 (종목, 분) 단위로 묶어 청산 건수를 센다
+        closes_by_day.setdefault(d, set()).add((x["symbol"], x["time"] // 60000))
     today = datetime.now(timezone.utc).date()
     # starting_balance 는 0으로 둔다 - 봇처럼 정해진 스테이크 풀이 없어서
     # "그날 시작 잔고 대비 수익률" 자체가 성립하지 않는 개념이다. 프론트는
@@ -1719,6 +1729,7 @@ def fetch_manual_pnl(days: int = 14) -> dict:
             "date": (today - timedelta(days=i)).isoformat(),
             "abs_profit": by_day.get(today - timedelta(days=i), 0.0),
             "starting_balance": 0,
+            "trade_count": len(closes_by_day.get(today - timedelta(days=i), ())),
         }
         for i in range(days - 1, -1, -1)
     ]
@@ -2288,7 +2299,11 @@ def _reconcile_bot_trades() -> int:
                 orders = binance_signed("/fapi/v1/allOrders", {
                     "symbol": f"{base}USDT", "startTime": int(t["open_timestamp"]) - 10_000,
                 })
-                filled = [o for o in orders if float(o.get("executedQty") or 0) > 0]
+                # 진입 직전에 같은 종목의 이전 거래가 청산된 주문(리밸런스로 청산 후 몇 초 뒤
+                # 재진입)은 이 거래 것이 아니다 - 진입 시각 2초 전 이후에 체결된 것만 센다(10/23 ADA).
+                since_ms = int(t["open_timestamp"]) - 2000
+                filled = [o for o in orders if float(o.get("executedQty") or 0) > 0
+                          and int(o.get("updateTime") or 0) >= since_ms]
                 if len(filled) != 2:
                     _reconcile_tried[tk] = float("inf")
                     continue
@@ -2379,6 +2394,111 @@ def _position_watch_loop() -> None:
 
 
 # ============================================================
+# 보유 포지션 수익률 단계 알림 (2026-10-22)
+#
+# 봇 포지션의 손익이 +10%, +20%, +30% ... 를 처음 넘을 때마다 텔레그램과 대시보드
+# 알림을 보낸다 - 봇의 익절/만기 청산 전에 사람이 직접 판단해 정리할 수 있게.
+# 손익 %는 대시보드 포지션 표와 같은 freqtrade 의 profit_pct(증거금 대비, 레버리지 반영).
+# 한 거래에서 같은 단계는 한 번만 보낸다(떨어졌다 다시 넘어도 재발송 안 함). 보낸 단계는
+# 파일에 남겨 대시보드를 재시작해도 다시 보내지 않는다.
+# ============================================================
+PROFIT_ALERT_STEP_PCT = 10
+PROFIT_ALERT_CHECK_SEC = 15
+PROFIT_ALERT_FILE = ROOT / "profit_alerts.json"
+
+
+def _load_profit_alerts() -> dict:
+    try:
+        return json.loads(PROFIT_ALERT_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+_profit_alerts: dict = _load_profit_alerts()  # "봇id:거래id" -> 이미 알린 가장 높은 단계(%)
+
+
+def _check_profit_milestones_once() -> None:
+    open_keys = set()
+    checked_bots = set()  # 이번에 거래 목록을 실제로 받아 온 봇 - 이 봇들의 기록만 정리한다
+    changed = False
+    # 계좌에 실제로 있는 포지션만 알린다 - 봇 기록에만 남은 유령 거래(이미 직접 청산했는데
+    # 봇이 아직 모르는 것)는 빼야 한다(10/23 ADA: 직접 청산 뒤 +10% 알림이 갔다).
+    acct = fetch_account()
+    held = ({(p["base"], p["side"]) for p in acct.get("positions", [])} if acct.get("ok") else None)
+    for bot in BOTS:
+        if _offline_bots.get(bot["id"]):
+            continue
+        try:
+            trades = call_bot(bot["url"], "/api/v1/status")
+        except Exception:  # noqa: BLE001
+            continue
+        checked_bots.add(bot["id"])
+        for t in trades:
+            key = f"{bot['id']}:{t['trade_id']}"
+            open_keys.add(key)
+            if held is not None and (t["pair"].split("/")[0], "short" if t.get("is_short") else "long") not in held:
+                continue
+            pct = t.get("profit_pct")
+            if pct is None:
+                continue
+            step = int(pct // PROFIT_ALERT_STEP_PCT) * PROFIT_ALERT_STEP_PCT
+            done = _profit_alerts.get(key, 0)
+            if step < PROFIT_ALERT_STEP_PCT or step <= done:
+                continue
+            _profit_alerts[key] = step
+            changed = True
+            base = t["pair"].split("/")[0]
+            side = "숏" if t.get("is_short") else "롱"
+            tg = exit_targets(t, bot, {})
+            extra = []
+            if tg.get("take_profit_abs"):
+                extra.append(f"익절 목표: {tg['take_profit_abs']:.6g}")
+            if tg.get("hold_remaining_h") is not None:
+                extra.append(f"자동 청산까지: {tg['hold_remaining_h']:.0f}시간")
+            send_telegram(
+                f"[{bot['name']}] [💰 수익 +{step}% 도달]\n"
+                f"종목: {base} ({side})\n"
+                f"현재 수익률: {pct:+.2f}% ({t.get('profit_abs', 0):+.2f} USDT)\n"
+                f"진입가 {t['open_rate']:.6g} → 현재가 {t.get('current_rate') or 0:.6g}\n"
+                + ("\n".join(extra) + "\n" if extra else "")
+                + "직접 정리하려면 바이낸스에서 청산하세요(봇 기록에 자동 반영).\n"
+                "====================="
+            )
+            record_notification({
+                "time": datetime.now(timezone.utc).isoformat(),
+                "event": "profit_milestone",
+                "bot_name": bot["name"],
+                "pair": t["pair"],
+                "is_short": bool(t.get("is_short")),
+                "step": step,
+                "profit_ratio_pct": pct,
+                "profit_amount": t.get("profit_abs"),
+            })
+    # 닫힌 거래 기록은 정리(파일이 계속 커지지 않게). 봇 API 가 잠깐 안 될 때 지워 버리면
+    # 다시 연결됐을 때 같은 알림이 또 나가므로(10/23 재시작 중 ADA +10% 두 번), 이번에
+    # 거래 목록을 실제로 받은 봇의 것만 정리한다.
+    for k in list(_profit_alerts):
+        bot_id = k.split(":")[0]
+        if bot_id in checked_bots and k not in open_keys:
+            del _profit_alerts[k]
+            changed = True
+    if changed:
+        try:
+            PROFIT_ALERT_FILE.write_text(json.dumps(_profit_alerts), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _profit_milestone_loop() -> None:
+    while True:
+        try:
+            _check_profit_milestones_once()
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(PROFIT_ALERT_CHECK_SEC)
+
+
+# ============================================================
 # 봇 헬스체크 - 2026-09-29 CoinGecko 요청이 쌓여 DB 커넥션 풀이 고갈되면서
 # XSectMomentum API 전체가 응답을 멈췄는데, 아무도 알림을 못 받아서 사용자가
 # 직접 화면 보고 알아챌 때까지 몰랐던 사고가 있었다. 그때 실제로 죽은 건
@@ -2391,20 +2511,61 @@ BOT_HEALTH_FAIL_THRESHOLD = 2  # 연속 실패 2회(최대 약 2분)부터 "장�
 _bot_health_state: dict = {}
 
 
+# 대시보드 정지 버튼으로 멈춘 봇(사람이 일부러 멈춤). 이 목록에 없는데 봇이 "정지" 상태면
+# 오류로 재시작된 것으로 보고 경고한다 - 10/23 RSI 봇이 오류로 두 번 재시작된 뒤
+# initial_state=stopped 로 떠서, 열린 포지션 5개가 9시간 동안 조용히 방치됐다.
+USER_STOPPED_FILE = ROOT / "user_stopped_bots.json"
+
+
+def _load_user_stopped() -> set:
+    try:
+        return set(json.loads(USER_STOPPED_FILE.read_text(encoding="utf-8")))
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+_user_stopped: set = _load_user_stopped()
+
+
+def _set_user_stopped(bot_id: str, stopped: bool) -> None:
+    (_user_stopped.add if stopped else _user_stopped.discard)(bot_id)
+    try:
+        USER_STOPPED_FILE.write_text(json.dumps(sorted(_user_stopped)), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _check_bot_health_once() -> None:
     for bot in BOTS:
         if _offline_bots.get(bot["id"]):
             continue  # 일부러 꺼둔(또는 켜는 중인) 봇 - 장애 아님
         state = _bot_health_state.setdefault(bot["id"], {"failures": 0, "down": False})
         error_text = None
+        open_trades = []
         try:
-            call_bot(bot["url"], "/api/v1/status")
+            open_trades = call_bot(bot["url"], "/api/v1/status")
             ok = True
         except Exception as exc:  # noqa: BLE001
             ok = False
             error_text = str(exc)[:200]
 
         if ok:
+            try:
+                run_state = call_bot(bot["url"], "/api/v1/show_config").get("state")
+            except Exception:  # noqa: BLE001
+                run_state = None
+            if run_state == "running":
+                state["stopped_alerted"] = False
+            elif run_state == "stopped" and bot["id"] not in _user_stopped and not state.get("stopped_alerted"):
+                state["stopped_alerted"] = True
+                pairs = ", ".join(t["pair"].split("/")[0] for t in open_trades) or "없음"
+                send_telegram(
+                    f"[{bot['name']}] [⚠️ 봇이 정지 상태입니다]\n"
+                    f"대시보드에서 정지하지 않았는데 봇이 정지돼 있습니다(오류로 재시작됐을 수 있음).\n"
+                    f"열린 포지션 {len(open_trades)}개({pairs})의 익절·청산 관리와 신규 진입이 멈춰 있습니다.\n"
+                    f"대시보드에서 시작 버튼을 눌러주세요.\n"
+                    f"====================="
+                )
             if state["down"]:
                 send_telegram(
                     f"[{bot['name']}] [서버 상태]\n"
@@ -2732,6 +2893,7 @@ def _score_headlines(batch: list[dict]) -> list[dict]:
 
 가격 움직임을 사후 해설하는 기사("비트코인 3% 상승" 등)는 새 사건이 아니면 2 이하로 매겨라.
 headline_ko 는 한국어 한 줄(40자 이내, 핵심 사실만), impact_ko 는 코인/미국증시에 줄 수 있는 영향 한 문장.
+direction 은 그 시장(category)의 가격에 호재(오를 쪽 = 롱 우세)/악재(내릴 쪽 = 숏 우세)/중립(방향 불분명) 중 하나.
 수치나 사실을 지어내지 마라.
 
 {lines}"""
@@ -2762,8 +2924,10 @@ headline_ko 는 한국어 한 줄(40자 이내, 핵심 사실만), impact_ko 는
                                         "category": {"type": "string", "enum": ["코인", "미국증시", "거시·정책", "지정학"]},
                                         "headline_ko": {"type": "string"},
                                         "impact_ko": {"type": "string"},
+                                        "direction": {"type": "string", "enum": ["호재", "악재", "중립"]},
                                     },
-                                    "required": ["id", "importance", "category", "headline_ko", "impact_ko"],
+                                    "required": ["id", "importance", "category", "headline_ko", "impact_ko",
+                                                 "direction"],
                                     "additionalProperties": False,
                                 },
                             }
@@ -2782,9 +2946,51 @@ headline_ko 는 한국어 한 줄(40자 이내, 핵심 사실만), impact_ko 는
     return json.loads(resp.json()["choices"][0]["message"]["content"]).get("items", [])
 
 
+def _fill_missing_direction() -> None:
+    """direction(호재/악재) 필드가 생기기 전(2026-10-22)에 저장된 주요 뉴스에 한 번 채운다."""
+    with _major_news_lock:
+        todo = [e for e in _major_news["items"] if "direction" not in e]
+    if not todo:
+        return
+    lines = "\n".join(f"{i}. ({e['category']}) {e['headline']} — {e['impact']}" for i, e in enumerate(todo))
+    resp = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+        json={
+            "model": AI_OPINION_MODEL,
+            "messages": [
+                {"role": "system", "content": "너는 시장 영향도를 냉정하게 분류하는 금융 뉴스 데스크 에디터다."},
+                {"role": "user", "content": "각 뉴스가 그 시장(괄호 안)의 가격에 호재(롱 우세)/악재(숏 우세)/중립인지 분류하라.\n" + lines},
+            ],
+            "response_format": {"type": "json_schema", "json_schema": {"name": "dirs", "strict": True, "schema": {
+                "type": "object", "additionalProperties": False, "required": ["items"],
+                "properties": {"items": {"type": "array", "items": {
+                    "type": "object", "additionalProperties": False, "required": ["id", "direction"],
+                    "properties": {"id": {"type": "integer"},
+                                   "direction": {"type": "string", "enum": ["호재", "악재", "중립"]}}}}}}}},
+            "temperature": 0.1,
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    got = json.loads(resp.json()["choices"][0]["message"]["content"]).get("items", [])
+    with _major_news_lock:
+        for g in got:
+            i = g.get("id")
+            if isinstance(i, int) and 0 <= i < len(todo):
+                todo[i]["direction"] = g["direction"]
+        for e in todo:
+            e.setdefault("direction", "중립")
+    _save_major_news()
+
+
 def _detect_major_news(items: list[dict]) -> None:
     if not OPENAI_API_KEY:
         return
+    try:
+        _fill_missing_direction()
+    except Exception:  # noqa: BLE001
+        pass
     now = datetime.now(timezone.utc)
     with _major_news_lock:
         seen = _major_news["seen"]
@@ -2814,6 +3020,7 @@ def _detect_major_news(items: list[dict]) -> None:
                     "category": sc["category"],
                     "headline": sc["headline_ko"],
                     "impact": sc["impact_ko"],
+                    "direction": sc.get("direction", "중립"),
                     "source": it["source"],
                     "link": it["link"],
                     "title_en": it["title"],
@@ -3153,6 +3360,7 @@ if __name__ == "__main__":
     threading.Thread(target=_backfill_notifications_loop, daemon=True).start()
     threading.Thread(target=_bot_health_check_loop, daemon=True).start()
     threading.Thread(target=_position_watch_loop, daemon=True).start()
+    threading.Thread(target=_profit_milestone_loop, daemon=True).start()
     threading.Thread(target=predictor.loop, args=(_news_headlines_for_predictor, OPENAI_API_KEY),
                      daemon=True).start()
 

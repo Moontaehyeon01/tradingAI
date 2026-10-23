@@ -57,6 +57,14 @@
             <span>최근 알림</span>
             <button class="alert-modal-close" id="alertModalClose">✕</button>
           </div>
+          <!-- 종류별 필터. 버튼은 고정 마크업이고 개수만 app.js 가 바꾼다(버튼을 다시 그리면
+               클릭한 요소가 사라져 "모달 밖 클릭"으로 오인돼 창이 닫힌다). -->
+          <div class="alert-filters" id="alertFilters">
+            <button type="button" class="alert-filter active" data-filter="all">전체 <span class="cnt" data-cnt="all"></span></button>
+            <button type="button" class="alert-filter" data-filter="entry_fill">진입 체결 <span class="cnt" data-cnt="entry_fill"></span></button>
+            <button type="button" class="alert-filter" data-filter="exit_fill">청산 완료 <span class="cnt" data-cnt="exit_fill"></span></button>
+            <button type="button" class="alert-filter" data-filter="profit_milestone">수익 도달 <span class="cnt" data-cnt="profit_milestone"></span></button>
+          </div>
           <div class="alert-modal-body" id="alertsList">
             <div class="empty-row">알림 불러오는 중…</div>
           </div>
@@ -228,12 +236,17 @@
         <div class="panel chart-panel">
           <div class="panel-head">
             <div>
-              <div class="panel-title">누적 손익 추이</div>
+              <!-- 누적(선) / 일별(막대) 전환. 기간 버튼은 둘이 같이 쓴다 (app.js pnlView) -->
+              <div class="chart-tabs" id="pnlChartTabs">
+                <button type="button" class="chart-tab active" data-view="cum">누적 손익 추이</button>
+                <button type="button" class="chart-tab" data-view="daily">일별 손익 추이</button>
+              </div>
               <div class="panel-sub" id="equitySub">최근 14일 · 전략별</div>
             </div>
             <div class="equity-controls">
               <!-- 클릭은 app.js가 위임(delegation)으로 처리한다 -->
               <div class="period-toggle" id="equityPeriodToggle">
+                <button class="period-btn" data-days="7">7일</button>
                 <button class="period-btn active" data-days="14">14일</button>
                 <button class="period-btn" data-days="30">30일</button>
                 <button class="period-btn" data-days="60">60일</button>
@@ -245,6 +258,7 @@
           </div>
           <div class="chart-canvas-wrap">
             <canvas id="equityChart"></canvas>
+            <canvas id="dailyChart" style="display:none"></canvas>
             <div class="chart-empty-state" id="equityEmptyState" hidden>
               아직 쌓인 데이터가 없습니다.<br>거래가 진행되면 여기에 손익 곡선이 표시됩니다.
             </div>

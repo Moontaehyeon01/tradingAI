@@ -22,7 +22,7 @@ let appliedSeq = 0;
 let selectedBotId = "xsectrsi";
 let lastSeenAlertTime = null; // 새로 도착한 알림만 구분해서 소리 재생하기 위한 기준점
 let audioCtx = null;
-// 누적손익추이 그래프 기간. 서버가 14/30/60 만 허용하므로(api_summary 참고)
+// 누적손익추이 그래프 기간. 서버가 7/14/30/60 만 허용하므로(api_summary 참고)
 // 여기서도 이 세 값만 쓴다. refresh() 가 이 값을 그대로 쿼리스트링에 싣는다.
 let equityDays = 14;
 
@@ -276,7 +276,57 @@ function hexToRgba(hex, a) {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
 }
 
+// 누적/일별 그래프에 같이 쓰는 전략별 일별 손익 시리즈
+function pnlSeries(summary) {
+  // 봇 목록을 그대로 따라가도록 동적으로 구성한다.
+  // (예전엔 bots[0]="추세추종", bots[1]="평균회귀"로 하드코딩돼 있어서,
+  //  전략을 교체하면 새 전략이 옛 이름으로 표시되고 없는 봇은 빈 선으로 남았다)
+  const series = summary.bots
+    .filter((b) => b.connected)
+    .map((b, i) => ({
+      label: b.name.replace(/\s*\(.*\)\s*/, "") || b.id,
+      color: BOT_COLORS[i % BOT_COLORS.length],
+      daily: b.daily || [],
+    }));
+  // 수동 매매도 봇과 같은 그래프에 한 시리즈로 얹는다 - server.py 의
+  // manual_daily 가 봇 daily 와 같은 창으로 맞춰서 나온다.
+  // 값이 전부 0인 빈 시리즈를 만들지 않도록, 실제로 손익이 있을 때만 넣는다.
+  const manualDaily = summary.combined?.manual_daily || [];
+  if (manualDaily.some((d) => Math.abs(d.abs_profit) > 0.0001)) {
+    series.push({
+      label: "수동",
+      color: BOT_COLORS[series.length % BOT_COLORS.length],
+      daily: manualDaily,
+    });
+  }
+  return series;
+}
+
+function renderPnlLegend(series) {
+  const legendEl = document.getElementById("equityLegend");
+  if (legendEl) {
+    legendEl.innerHTML = series
+      .map(
+        (s) =>
+          `<span class="legend-item"><i class="dotcolor" style="background:${s.color}"></i>${s.label}</span>`
+      )
+      .join("");
+  }
+}
+
+// 그래프 탭: "cum"(누적 손익 추이, 선) / "daily"(일별 손익 추이, 막대). 새로고침해도 유지.
+let pnlView = (() => {
+  try {
+    return localStorage.getItem("pnlView") === "daily" ? "daily" : "cum";
+  } catch {
+    return "cum";
+  }
+})();
+let dailyChart = null;
+
 function renderEquityChart(summary) {
+  // 보고 있는 탭만 그린다(기간 버튼/4초 갱신 모두 여기로 들어온다)
+  if (pnlView === "daily") return renderDailyChart(summary);
   const ctx = document.getElementById("equityChart");
 
   const sub = document.getElementById("equitySub");
@@ -296,27 +346,7 @@ function renderEquityChart(summary) {
     });
   };
 
-  // 봇 목록을 그대로 따라가도록 동적으로 구성한다.
-  // (예전엔 bots[0]="추세추종", bots[1]="평균회귀"로 하드코딩돼 있어서,
-  //  전략을 교체하면 새 전략이 옛 이름으로 표시되고 없는 봇은 빈 선으로 남았다)
-  const series = summary.bots
-    .filter((b) => b.connected)
-    .map((b, i) => ({
-      label: b.name.replace(/\s*\(.*\)\s*/, "") || b.id,
-      color: BOT_COLORS[i % BOT_COLORS.length],
-      daily: b.daily || [],
-    }));
-  // 수동 매매도 봇과 같은 그래프에 한 시리즈로 얹는다 - server.py 의
-  // manual_daily 가 봇 daily 와 같은 창(최근 14일)으로 맞춰서 나온다.
-  // 값이 전부 0인 빈 시리즈를 만들지 않도록, 실제로 손익이 있을 때만 넣는다.
-  const manualDaily = summary.combined?.manual_daily || [];
-  if (manualDaily.some((d) => Math.abs(d.abs_profit) > 0.0001)) {
-    series.push({
-      label: "수동",
-      color: BOT_COLORS[series.length % BOT_COLORS.length],
-      daily: manualDaily,
-    });
-  }
+  const series = pnlSeries(summary);
 
   const longest = series.reduce(
     (best, s) => (s.daily.length > best.length ? s.daily : best),
@@ -325,15 +355,7 @@ function renderEquityChart(summary) {
   const labels = longest.map((d) => d.date.slice(5));
 
   // 범례도 실제 봇에 맞춰 다시 그림
-  const legendEl = document.getElementById("equityLegend");
-  if (legendEl) {
-    legendEl.innerHTML = series
-      .map(
-        (s) =>
-          `<span class="legend-item"><i class="dotcolor" style="background:${s.color}"></i>${s.label}</span>`
-      )
-      .join("");
-  }
+  renderPnlLegend(series);
 
   const datasets = series.map((s) => {
     const grad = ctx.getContext("2d").createLinearGradient(0, 0, 0, 240);
@@ -809,9 +831,142 @@ document.getElementById("equityPeriodToggle")?.addEventListener("click", (e) => 
   refresh();
 });
 
+// ---------------- 일별 손익 추이 (막대) ----------------
+// 날짜마다 그날 청산해서 확정된 손익을 전략별로 쌓아 보여준다(미실현 손익 제외).
+function renderDailyChart(summary) {
+  const ctx = document.getElementById("dailyChart");
+  const series = pnlSeries(summary);
+  renderPnlLegend(series);
+
+  const longest = series.reduce((best, s) => (s.daily.length > best.length ? s.daily : best), []);
+  const labels = longest.map((d) => d.date.slice(5));
+  const totals = labels.map((_, i) =>
+    series.reduce((a, s) => a + (s.daily[i] ? s.daily[i].abs_profit : 0), 0)
+  );
+  const counts = labels.map((_, i) =>
+    series.reduce((a, s) => a + (s.daily[i] ? s.daily[i].trade_count || 0 : 0), 0)
+  );
+
+  const sum = totals.reduce((a, v) => a + v, 0);
+  const upDays = totals.filter((v) => v > 0.0001).length;
+  const downDays = totals.filter((v) => v < -0.0001).length;
+  const sub = document.getElementById("equitySub");
+  if (sub) {
+    sub.innerHTML =
+      `최근 ${equityDays}일 · 청산 확정 손익 합계 ` +
+      `<span class="${pnlClass(sum)}">${fmtUsd(sum)} USDT</span> · 수익일 ${upDays} / 손실일 ${downDays}`;
+  }
+
+  const hasSignal = totals.some((v) => Math.abs(v) > 0.0001);
+  const emptyState = document.getElementById("equityEmptyState");
+  emptyState.hidden = hasSignal;
+  ctx.style.visibility = hasSignal ? "visible" : "hidden";
+  if (!hasSignal && !dailyChart) return;
+
+  const datasets = series.map((s) => ({
+    label: s.label,
+    data: s.daily.map((d) => d.abs_profit),
+    counts: s.daily.map((d) => d.trade_count || 0),
+    backgroundColor: hexToRgba(s.color, 0.85),
+    borderRadius: 3,
+    maxBarThickness: 28,
+    stack: "pnl",
+  }));
+
+  const sameShape =
+    dailyChart &&
+    dailyChart.data.datasets.length === datasets.length &&
+    dailyChart.data.datasets.every((d, i) => d.label === datasets[i].label);
+  if (sameShape) {
+    dailyChart.data.labels = labels;
+    datasets.forEach((d, i) => {
+      dailyChart.data.datasets[i].data = d.data;
+      dailyChart.data.datasets[i].counts = d.counts;
+    });
+    dailyChart.$totals = totals;
+    dailyChart.$counts = counts;
+    dailyChart.update("none");
+    return;
+  }
+  if (dailyChart) dailyChart.destroy();
+  dailyChart = new Chart(ctx, {
+    type: "bar",
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: "#1b1e27",
+          borderColor: "#262a35",
+          borderWidth: 1,
+          titleColor: "#8b90a0",
+          bodyColor: "#eef0f4",
+          footerColor: "#eef0f4",
+          bodyFont: { family: "JetBrains Mono" },
+          footerFont: { family: "JetBrains Mono", weight: "700" },
+          padding: 10,
+          callbacks: {
+            label: (c) => {
+              const v = c.parsed.y;
+              const n = c.dataset.counts ? c.dataset.counts[c.dataIndex] : 0;
+              if (!v && !n) return null; // 그날 거래 없는 전략은 생략
+              return `${c.dataset.label}: ${v >= 0 ? "+" : ""}${v.toFixed(2)} USDT (${n}건)`;
+            },
+            footer: (items) => {
+              if (!items.length) return "";
+              const i = items[0].dataIndex;
+              const t = dailyChart.$totals[i];
+              return `합계: ${t >= 0 ? "+" : ""}${t.toFixed(2)} USDT · 청산 ${dailyChart.$counts[i]}건`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: { stacked: true, grid: { display: false }, ticks: { color: "#565b6b", font: { size: 10 } } },
+        y: {
+          stacked: true,
+          grid: { color: "#1e222c" },
+          ticks: { color: "#565b6b", font: { size: 10, family: "JetBrains Mono" } },
+        },
+      },
+    },
+  });
+  dailyChart.$totals = totals;
+  dailyChart.$counts = counts;
+}
+
+function applyPnlView() {
+  document
+    .querySelectorAll("#pnlChartTabs .chart-tab")
+    .forEach((b) => b.classList.toggle("active", b.dataset.view === pnlView));
+  document.getElementById("equityChart").style.display = pnlView === "cum" ? "" : "none";
+  document.getElementById("dailyChart").style.display = pnlView === "daily" ? "" : "none";
+  const s = summaryByDays[equityDays] || lastSummary;
+  if (s) renderEquityChart(s);
+  // 숨겨져 있던 캔버스는 크기가 0으로 잡혀 있을 수 있어 다시 맞춘다
+  if (pnlView === "daily" && dailyChart) dailyChart.resize();
+  if (pnlView === "cum" && equityChart) equityChart.resize();
+}
+
+document.getElementById("pnlChartTabs")?.addEventListener("click", (e) => {
+  const btn = e.target.closest(".chart-tab");
+  if (!btn || btn.dataset.view === pnlView) return;
+  pnlView = btn.dataset.view;
+  try {
+    localStorage.setItem("pnlView", pnlView);
+  } catch {
+    /* 저장 못 해도 이번 화면에선 동작 */
+  }
+  applyPnlView();
+});
+applyPnlView();
+
 // 처음 열 때 다른 기간도 미리 받아둔다 - 첫 클릭부터 바로 바뀌게
 async function prefetchOtherPeriods() {
-  for (const d of [14, 30, 60]) {
+  for (const d of [7, 14, 30, 60]) {
     if (d === equityDays || summaryByDays[d]) continue;
     try {
       summaryByDays[d] = await fetchJSON(`/api/summary?days=${d}`);
@@ -852,6 +1007,7 @@ function checkNewAlertsAndPlaySound(alerts) {
     .forEach((a) => {
       if (a.event === "entry_fill") playEntrySound();
       else if (a.event === "exit_fill") playExitSound((a.profit_ratio_pct ?? 0) >= 0);
+      else if (a.event === "profit_milestone") playExitSound(true);
     });
 
   // 기준시각은 앞으로만 움직인다 - 혹시라도 이번에 온 alerts의 최댓값이
@@ -859,13 +1015,35 @@ function checkNewAlertsAndPlaySound(alerts) {
   if (maxTime > lastSeenAlertTime) lastSeenAlertTime = maxTime;
 }
 
+// 알림 창 필터: "all" | "entry_fill" | "exit_fill" | "profit_milestone"
+const ALERT_KINDS = ["entry_fill", "exit_fill", "profit_milestone"];
+let alertFilter = "all";
+let lastAlerts = [];
+
 function renderAlerts(alerts) {
+  lastAlerts = alerts;
   const el = document.getElementById("alertsList");
-  if (!alerts.length) {
-    setHTMLIfChanged(el, `<div class="empty-row">아직 알림이 없습니다</div>`);
+  // 화면에 보여주는 종류만 센다(봇 상태 메시지 등은 목록에 안 나온다)
+  const counts = { all: 0 };
+  for (const a of alerts) {
+    if (!ALERT_KINDS.includes(a.event)) continue;
+    counts[a.event] = (counts[a.event] || 0) + 1;
+    counts.all += 1;
+  }
+  document.querySelectorAll("#alertFilters .cnt").forEach((c) => {
+    c.textContent = counts[c.dataset.cnt] || 0;
+  });
+  const shown = alerts.filter((a) =>
+    alertFilter === "all" ? ALERT_KINDS.includes(a.event) : a.event === alertFilter
+  );
+  if (!shown.length) {
+    setHTMLIfChanged(
+      el,
+      `<div class="empty-row">${alerts.length ? "이 종류의 알림이 없습니다" : "아직 알림이 없습니다"}</div>`
+    );
     return;
   }
-  const html = alerts
+  const html = shown
     .map((a) => {
       if (a.event === "entry_fill") {
         return `
@@ -896,11 +1074,36 @@ function renderAlerts(alerts) {
             <div class="alert-time">${timeAgo(a.time.replace("T", " ").slice(0, 19))}</div>
           </div>`;
       }
+      if (a.event === "profit_milestone") {
+        return `
+          <div class="alert-item">
+            <div class="alert-icon exit-pos">${a.is_short ? "S" : "L"}</div>
+            <div class="alert-body">
+              <div class="alert-title">
+                <span class="alert-bot-tag">${a.bot_name}</span>
+                수익 +${a.step}% 도달 · ${fmtPair(a.pair)} · <span class="pos">${fmtPct(a.profit_ratio_pct)}</span>
+              </div>
+              <div class="alert-sub">${fmtUsd(a.profit_amount)} USDT · 보유 중 (직접 정리 판단용 알림)</div>
+            </div>
+            <div class="alert-time">${timeAgo(a.time.replace("T", " ").slice(0, 19))}</div>
+          </div>`;
+      }
       return "";
     })
     .join("");
   setHTMLIfChanged(el, html);
 }
+
+document.getElementById("alertFilters")?.addEventListener("click", (e) => {
+  const btn = e.target.closest(".alert-filter");
+  if (!btn || btn.dataset.filter === alertFilter) return;
+  alertFilter = btn.dataset.filter;
+  document
+    .querySelectorAll("#alertFilters .alert-filter")
+    .forEach((b) => b.classList.toggle("active", b === btn));
+  renderAlerts(lastAlerts);
+  document.getElementById("alertModal").scrollTop = 0; // 스크롤은 모달 전체가 한다
+});
 
 /* ---------------- Nav smooth scroll ---------------- */
 
