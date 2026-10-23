@@ -125,6 +125,9 @@ XSectMomentumStrategy — 횡단면 모멘텀 (시장중립 롱숏)
     분리했다(동작은 그대로). 같은 규칙에 RSI(14) 순위만 바꾼 XSectRsiStrategy가
     이 둘을 덮어써서 쓴다.
 
+  2026-10-23 freqtrade 의 거래소 직접 청산 복구가 이전 거래의 주문까지 붙이다 봇이
+    죽는 문제를 모듈 상단 _patch_onexchange_recovery 로 보완했다.
+
   2026-10-17 계좌 겹침 방지를 RSI 봇에서 이쪽(부모)으로 옮겼다. 두 봇이 같은 바이낸스
     계좌(단방향 모드)를 쓰므로 같은 종목을 잡으면 포지션이 하나로 합쳐진다. 계좌에 이미
     다른 봇/수동 포지션이 있는 종목은 건너뛰고 다음 순위로 채운다(_foreign_pairs).
@@ -149,10 +152,59 @@ from typing import Optional
 import numpy as np
 from pandas import DataFrame
 
-from freqtrade.persistence import Trade
+from freqtrade.persistence import Order, Trade
 from freqtrade.strategy import IStrategy, IntParameter
 
 logger = logging.getLogger(__name__)
+
+
+# ----------------------------------------------------------------------
+# freqtrade 복구 로직 보완 (2026-10-23)
+#
+# 거래소에서 직접 닫힌 포지션을 freqtrade 가 찾을 때(FreqtradeBot.handle_onexchange_order -
+# 지갑 동기화 때 자동으로, 또는 /trades/{id}/reload 로) "진입 10초 전부터"의 주문을 전부
+# 그 거래에 붙인다. 같은 종목을 청산하고 몇 초 뒤 반대로 재진입한 경우(리밸런스) 이전
+# 거래의 청산 주문까지 붙이려다 DB 중복 오류(UNIQUE orders.ft_pair, order_id)가 나고,
+# 세션이 깨진 채 워커가 죽었다 - 10/23 02:35 ADA 숏 직접 청산 뒤 03:01 RSI 봇이 두 번
+# 죽고 정지 상태로 떠서 9시간 동안 포지션 관리가 멈췄다.
+# 이미 다른 거래에 속한 주문은 빼고 찾게 하고, 그래도 오류가 나면 세션을 되돌려 봇이
+# 죽지 않게 한다. 전략 모듈이 로드될 때 한 번 적용된다(두 봇 공통).
+# ----------------------------------------------------------------------
+def _patch_onexchange_recovery() -> None:
+    try:
+        from sqlalchemy import select
+
+        from freqtrade.freqtradebot import FreqtradeBot
+    except Exception:  # noqa: BLE001
+        return
+    if getattr(FreqtradeBot.handle_onexchange_order, "_xsect_safe", False):
+        return
+    original = FreqtradeBot.handle_onexchange_order
+
+    def safe_handle_onexchange_order(self, trade):
+        other_ids = set(Order.session.scalars(
+            select(Order.order_id).filter(Order.ft_pair == trade.pair, Order.ft_trade_id != trade.id)
+        ).all())
+        exchange = self.exchange
+        real_fetch = exchange.fetch_orders
+
+        def fetch_orders(pair, since, params=None):
+            orders = real_fetch(pair, since, params=params)
+            return [o for o in orders if o.get("id") not in other_ids]
+
+        exchange.fetch_orders = fetch_orders
+        try:
+            return original(self, trade)
+        finally:
+            del exchange.fetch_orders  # 인스턴스에 덮어쓴 것만 지워 원래 메서드로 복원
+            if not Trade.session.is_active:
+                Trade.session.rollback()
+
+    safe_handle_onexchange_order._xsect_safe = True
+    FreqtradeBot.handle_onexchange_order = safe_handle_onexchange_order
+
+
+_patch_onexchange_recovery()
 
 
 class XSectMomentumStrategy(IStrategy):
