@@ -1007,7 +1007,7 @@ function checkNewAlertsAndPlaySound(alerts) {
     .forEach((a) => {
       if (a.event === "entry_fill") playEntrySound();
       else if (a.event === "exit_fill") playExitSound((a.profit_ratio_pct ?? 0) >= 0);
-      else if (a.event === "profit_milestone") playExitSound(true);
+      else if (a.event === "profit_milestone") playExitSound((a.step ?? 1) > 0);
     });
 
   // 기준시각은 앞으로만 움직인다 - 혹시라도 이번에 온 alerts의 최댓값이
@@ -1075,13 +1075,14 @@ function renderAlerts(alerts) {
           </div>`;
       }
       if (a.event === "profit_milestone") {
+        const up = a.step > 0;
         return `
           <div class="alert-item">
-            <div class="alert-icon exit-pos">${a.is_short ? "S" : "L"}</div>
+            <div class="alert-icon ${up ? "exit-pos" : "exit-neg"}">${a.is_short ? "S" : "L"}</div>
             <div class="alert-body">
               <div class="alert-title">
                 <span class="alert-bot-tag">${a.bot_name}</span>
-                수익 +${a.step}% 도달 · ${fmtPair(a.pair)} · <span class="pos">${fmtPct(a.profit_ratio_pct)}</span>
+                ${up ? `수익 +${a.step}%` : `손실 ${a.step}%`} 도달 · ${fmtPair(a.pair)} · <span class="${up ? "pos" : "neg"}">${fmtPct(a.profit_ratio_pct)}</span>
               </div>
               <div class="alert-sub">${fmtUsd(a.profit_amount)} USDT · 보유 중 (직접 정리 판단용 알림)</div>
             </div>

@@ -2394,9 +2394,9 @@ def _position_watch_loop() -> None:
 
 
 # ============================================================
-# 보유 포지션 수익률 단계 알림 (2026-10-22)
+# 보유 포지션 손익 단계 알림 (2026-10-22, 10-28 손실·수동 포지션 추가)
 #
-# 봇 포지션의 손익이 +10%, +20%, +30% ... 를 처음 넘을 때마다 텔레그램과 대시보드
+# 봇·수동 포지션의 손익이 ±10%, ±20%, ±30% ... 를 처음 넘을 때마다 텔레그램과 대시보드
 # 알림을 보낸다 - 봇의 익절/만기 청산 전에 사람이 직접 판단해 정리할 수 있게.
 # 손익 %는 대시보드 포지션 표와 같은 freqtrade 의 profit_pct(증거금 대비, 레버리지 반영).
 # 한 거래에서 같은 단계는 한 번만 보낸다(떨어졌다 다시 넘어도 재발송 안 함). 보낸 단계는
@@ -2417,7 +2417,58 @@ def _load_profit_alerts() -> dict:
 _profit_alerts: dict = _load_profit_alerts()  # "봇id:거래id" -> 이미 알린 가장 높은 단계(%)
 
 
+def _milestone_steps(key: str, pct: float) -> list[int]:
+    """이번에 새로 넘은 단계(+10, +20 ... / -10, -20 ...)들. 이미 알린 단계는 빼고, 한 번에
+    여러 단계를 건너뛰었으면 가장 큰 것 하나만 돌려준다(메시지 도배 방지).
+    기록 형식: {"up": 알린 최고 수익 단계, "down": 알린 최저 손실 단계(음수)}.
+    예전(수익만 알리던 때)엔 정수 하나였다 - 그대로 읽어 up 으로 쓴다."""
+    rec = _profit_alerts.get(key)
+    if not isinstance(rec, dict):
+        rec = {"up": int(rec or 0), "down": 0}
+        _profit_alerts[key] = rec
+    out = []
+    if pct >= PROFIT_ALERT_STEP_PCT:
+        step = int(pct // PROFIT_ALERT_STEP_PCT) * PROFIT_ALERT_STEP_PCT
+        if step > rec["up"]:
+            rec["up"] = step
+            out.append(step)
+    elif pct <= -PROFIT_ALERT_STEP_PCT:
+        step = -int(-pct // PROFIT_ALERT_STEP_PCT) * PROFIT_ALERT_STEP_PCT
+        if step < rec["down"]:
+            rec["down"] = step
+            out.append(step)
+    return out
+
+
+def _send_milestone(owner: str, pair: str, is_short: bool, step: int, pct: float,
+                    amount: float, entry: float, current: float, extra: list[str], hint: str) -> None:
+    base = pair.split("/")[0]
+    side = "숏" if is_short else "롱"
+    title = f"💰 수익 +{step}% 도달" if step > 0 else f"📉 손실 {step}% 도달"
+    send_telegram(
+        f"[{owner}] [{title}]\n"
+        f"종목: {base} ({side})\n"
+        f"현재 손익: {pct:+.2f}% ({amount:+.2f} USDT)\n"
+        f"진입가 {entry:.6g} → 현재가 {current:.6g}\n"
+        + ("\n".join(extra) + "\n" if extra else "")
+        + hint + "\n"
+        "====================="
+    )
+    record_notification({
+        "time": datetime.now(timezone.utc).isoformat(),
+        "event": "profit_milestone",
+        "bot_name": owner,
+        "pair": pair,
+        "is_short": is_short,
+        "step": step,
+        "profit_ratio_pct": pct,
+        "profit_amount": amount,
+    })
+
+
 def _check_profit_milestones_once() -> None:
+    """봇·수동 포지션의 손익이 ±10%, ±20%, ±30% ... 를 처음 넘을 때 알린다(2026-10-28 손실·수동 추가).
+    손익 %는 증거금 대비(레버리지 반영) - 대시보드 표와 같은 기준."""
     open_keys = set()
     checked_bots = set()  # 이번에 거래 목록을 실제로 받아 온 봇 - 이 봇들의 기록만 정리한다
     changed = False
@@ -2441,45 +2492,49 @@ def _check_profit_milestones_once() -> None:
             pct = t.get("profit_pct")
             if pct is None:
                 continue
-            step = int(pct // PROFIT_ALERT_STEP_PCT) * PROFIT_ALERT_STEP_PCT
-            done = _profit_alerts.get(key, 0)
-            if step < PROFIT_ALERT_STEP_PCT or step <= done:
+            for step in _milestone_steps(key, pct):
+                changed = True
+                tg = exit_targets(t, bot, {})
+                extra = []
+                if step > 0 and tg.get("take_profit_abs"):
+                    extra.append(f"익절 목표: {tg['take_profit_abs']:.6g}")
+                if step < 0 and t.get("stop_loss_abs"):
+                    extra.append(f"손절 기준가: {t['stop_loss_abs']:.6g} (거래소 손절 주문)")
+                if tg.get("hold_remaining_h") is not None:
+                    extra.append(f"자동 청산까지: {tg['hold_remaining_h']:.0f}시간")
+                _send_milestone(bot["name"], t["pair"], bool(t.get("is_short")), step, pct,
+                                t.get("profit_abs") or 0, t["open_rate"], t.get("current_rate") or 0,
+                                extra, "직접 정리하려면 바이낸스에서 청산하세요(봇 기록에 자동 반영).")
+
+    # 수동 포지션(봇이 아닌 계좌 포지션) - 같은 종목·방향·진입가가 하나의 포지션
+    manual_checked = False
+    if acct.get("ok"):
+        manual_checked = True
+        for p in acct.get("positions", []):
+            if p.get("managed"):
                 continue
-            _profit_alerts[key] = step
-            changed = True
-            base = t["pair"].split("/")[0]
-            side = "숏" if t.get("is_short") else "롱"
-            tg = exit_targets(t, bot, {})
-            extra = []
-            if tg.get("take_profit_abs"):
-                extra.append(f"익절 목표: {tg['take_profit_abs']:.6g}")
-            if tg.get("hold_remaining_h") is not None:
-                extra.append(f"자동 청산까지: {tg['hold_remaining_h']:.0f}시간")
-            send_telegram(
-                f"[{bot['name']}] [💰 수익 +{step}% 도달]\n"
-                f"종목: {base} ({side})\n"
-                f"현재 수익률: {pct:+.2f}% ({t.get('profit_abs', 0):+.2f} USDT)\n"
-                f"진입가 {t['open_rate']:.6g} → 현재가 {t.get('current_rate') or 0:.6g}\n"
-                + ("\n".join(extra) + "\n" if extra else "")
-                + "직접 정리하려면 바이낸스에서 청산하세요(봇 기록에 자동 반영).\n"
-                "====================="
-            )
-            record_notification({
-                "time": datetime.now(timezone.utc).isoformat(),
-                "event": "profit_milestone",
-                "bot_name": bot["name"],
-                "pair": t["pair"],
-                "is_short": bool(t.get("is_short")),
-                "step": step,
-                "profit_ratio_pct": pct,
-                "profit_amount": t.get("profit_abs"),
-            })
-    # 닫힌 거래 기록은 정리(파일이 계속 커지지 않게). 봇 API 가 잠깐 안 될 때 지워 버리면
+            key = f"manual:{p['symbol']}:{p['side']}:{p['entry_price']}"
+            open_keys.add(key)
+            pct = p.get("pnl_pct")
+            if pct is None:
+                continue
+            for step in _milestone_steps(key, pct):
+                changed = True
+                extra = []
+                if p.get("liquidation_price"):
+                    extra.append(f"강제청산가: {p['liquidation_price']:.6g}")
+                _send_milestone("수동", f"{p['base']}/USDT", p["side"] == "short", step, pct,
+                                p.get("pnl") or 0, p["entry_price"], p.get("mark_price") or 0,
+                                extra, "직접 잡은 포지션입니다.")
+
+    # 닫힌 포지션 기록은 정리(파일이 계속 커지지 않게). 봇 API 가 잠깐 안 될 때 지워 버리면
     # 다시 연결됐을 때 같은 알림이 또 나가므로(10/23 재시작 중 ADA +10% 두 번), 이번에
-    # 거래 목록을 실제로 받은 봇의 것만 정리한다.
+    # 목록을 실제로 받은 봇(과 계좌)의 것만 정리한다.
     for k in list(_profit_alerts):
-        bot_id = k.split(":")[0]
-        if bot_id in checked_bots and k not in open_keys:
+        owner = k.split(":")[0]
+        if k in open_keys:
+            continue
+        if (owner == "manual" and manual_checked) or owner in checked_bots:
             del _profit_alerts[k]
             changed = True
     if changed:
