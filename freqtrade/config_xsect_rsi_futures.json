@@ -15,8 +15,10 @@
     "order_types": {
         "entry": "limit",
         "exit": "market",
-        "stoploss": "limit",
-        "stoploss_on_exchange": false
+        "stoploss": "market",
+        "stoploss_on_exchange": true,
+        "stoploss_on_exchange_interval": 60,
+        "stoploss_price_type": "mark"
     },
     "unfilledtimeout": {
         "entry": 10,
