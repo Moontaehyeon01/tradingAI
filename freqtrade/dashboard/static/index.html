@@ -5,8 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>태리의 매매봇</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<script>
+  // 라이트/다크 모드: 저장된 선택이 있으면 그것, 없으면 라이트(theme.js 에서 전환)
+  (function () {
+    var t = null;
+    try { t = localStorage.getItem("theme"); } catch (e) {}
+    document.documentElement.dataset.theme = t === "dark" ? "dark" : "light";
+    var v = (location.hash || "").slice(1);
+    if (["overview", "signals", "history", "ai"].indexOf(v) < 0) v = "overview";
+    document.documentElement.dataset.view = v;
+  })();
+</script>
+<link rel="stylesheet" href="style.css?v=20261110e">
 </head>
 <body>
 
@@ -20,27 +31,10 @@
     </div>
 
     <nav class="nav">
-      <a class="nav-item active" data-target="section-overview">
-        <span class="nav-icon">▦</span> Overview
-      </a>
-      <a class="nav-item" data-target="section-market">
-        <span class="nav-icon">◎</span> Market
-      </a>
-      <a class="nav-item" data-target="section-positions">
-        <span class="nav-icon">⇄</span> Positions
-      </a>
-      <a class="nav-item" data-target="section-signals">
-        <span class="nav-icon">◈</span> Signals
-      </a>
-      <a class="nav-item" data-target="section-charts">
-        <span class="nav-icon">📈</span> Performance
-      </a>
-      <a class="nav-item" data-target="section-history">
-        <span class="nav-icon">⏱</span> History
-      </a>
-      <a class="nav-item" data-target="section-ai">
-        <span class="nav-icon">✦</span> AI 분석
-      </a>
+      <a class="nav-item active" href="#overview" data-view="overview"><span class="nav-icon"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg></span>개요</a>
+      <a class="nav-item" href="#signals" data-view="signals"><span class="nav-icon"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.5"/></svg></span>진입 신호</a>
+      <a class="nav-item" href="#history" data-view="history"><span class="nav-icon"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg></span>내역</a>
+      <a class="nav-item" href="#ai" data-view="ai"><span class="nav-icon"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 5.5h15v10h-9l-4.5 4v-4h-1.5z"/><path d="M8.5 10.5h7"/></svg></span>AI 시황</a>
     </nav>
 
     <div class="topnav-right">
@@ -48,9 +42,10 @@
         <span class="mode-dot" id="modeDot"></span> <span id="modeText">확인 중</span>
       </div>
       <div id="authControl"></div>
+      <button class="icon-btn" id="themeBtn" type="button" title="다크 모드로" aria-label="다크 모드로"><svg class="ico ico-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/></svg><svg class="ico ico-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6L6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4"/></svg></button>
       <div class="alert-anchor">
-        <button class="icon-btn" title="알림" id="bellBtn">
-          🔔<span class="ping" id="alertPing"></span>
+        <button class="icon-btn" title="알림" aria-label="알림" id="bellBtn">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg><span class="ping" id="alertPing"></span>
         </button>
         <div class="alert-modal" id="alertModal" hidden>
           <div class="alert-modal-head">
@@ -71,7 +66,6 @@
         </div>
       </div>
       <div class="profile">
-        <div class="avatar">FT</div>
         <div class="profile-text">
           <span class="profile-name">Binance Futures</span>
           <span class="profile-sub" id="statusText">연결 확인 중</span>
@@ -93,16 +87,15 @@
 
       <!-- 주요 뉴스 한 줄 (코인/미국증시에 영향이 큰 뉴스만, 여러 건이면 돌아가며) -->
       <!-- 뉴스 글씨를 누르면 원문, 그 외 영역을 누르면 아래로 전체 목록이 펼쳐진다 -->
-      <div class="headline-wrap">
+      <div class="headline-wrap" data-view="overview">
         <div class="headline-bar" id="headlineBar">
           <span class="hl-label">주요 뉴스</span><span class="hl-empty">불러오는 중…</span>
         </div>
         <div class="headline-list" id="headlineList" hidden></div>
       </div>
 
-      <section id="section-overview" class="stat-grid">
+      <section id="section-overview" class="stat-grid" data-view="overview">
         <div class="stat-card">
-          <div class="stat-icon icon-blue">Σ</div>
           <div class="stat-body">
             <span class="stat-label">총 자산</span>
             <span class="stat-value" id="statEquity">–</span>
@@ -111,7 +104,6 @@
           <span class="stat-chip" id="statEquityChip">–</span>
         </div>
         <div class="stat-card">
-          <div class="stat-icon icon-purple">±</div>
           <div class="stat-body">
             <span class="stat-label">총 손익</span>
             <span class="stat-value" id="statPnl">–</span>
@@ -120,15 +112,13 @@
           <span class="stat-chip" id="statPnlChip">–</span>
         </div>
         <div class="stat-card">
-          <div class="stat-icon icon-orange">⇄</div>
           <div class="stat-body">
-            <span class="stat-label">보유 포지션</span>
+            <span class="stat-label">보유 포지션 손익</span>
             <span class="stat-value" id="statOpenCount">–</span>
           </div>
-          <span class="stat-chip neutral-chip" id="statOpenChip">LIVE</span>
+          <span class="stat-chip neutral-chip" id="statOpenChip">–</span>
         </div>
         <div class="stat-card">
-          <div class="stat-icon icon-green">%</div>
           <div class="stat-body">
             <span class="stat-label">평균 승률</span>
             <span class="stat-value" id="statWinrate">–</span>
@@ -138,24 +128,8 @@
       </section>
 
 
-      <section id="section-market" class="panel market-panel">
-        <div class="panel-head">
-          <div>
-            <div class="panel-title">실시간 시세 <span class="panel-title-en">· Market</span></div>
-            <div class="panel-sub">Binance Futures</div>
-          </div>
-        </div>
-        <table class="market-table">
-          <thead>
-            <tr><th>페어</th><th>가격</th><th>24H 변동</th></tr>
-          </thead>
-          <tbody id="tickerBody">
-            <tr><td colspan="3" class="empty-row">시세 불러오는 중…</td></tr>
-          </tbody>
-        </table>
-      </section>
 
-      <section id="section-positions">
+      <section id="section-positions" data-view="overview">
         <!-- 봇 두 개를 좌우로 나눠 보여주면 표가 좁아져서(배율/청산까지 컬럼이
              세로로 쪼개져 보일 정도로) 카드 헤더의 봇 이름 자체를 탭으로 만들어
              한 봇씩 전체 폭으로 보여준다. 기본은 RSI 봇(지금 실제로
@@ -164,75 +138,11 @@
           <!-- 봇 탭 + 선택된 봇 카드가 JS로 렌더링됨 -->
         </div>
 
-        <!-- 봇이 모르는 내 매매.
-             freqtrade는 자기가 낸 주문만 알기 때문에, 앱/웹에서 직접 잡은 포지션과
-             직접 걸어둔 미체결 주문은 위 봇 카드에 절대 나오지 않는다.
-             이 두 패널은 바이낸스 계좌를 직접 조회해서 그 부분을 채운다. -->
-        <div class="panel" id="manualPanel">
-          <div class="panel-head">
-            <div>
-              <div class="panel-title">수동 포지션 <span class="panel-title-en">· Manual</span></div>
-              <div class="panel-sub" id="manualNote">불러오는 중…</div>
-            </div>
-          </div>
-          <div class="table-scroll">
-            <table class="history-table" id="manualTable">
-              <thead>
-                <tr><th>종목</th><th>방향</th><th>배율</th><th>수량</th><th>진입가</th>
-                    <th>현재가</th><th>청산가</th><th>증거금</th><th>손익%</th><th>손익$</th></tr>
-              </thead>
-              <tbody id="manualBody">
-                <tr><td colspan="10" class="empty-row">불러오는 중…</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="panel" id="orderPanel">
-          <div class="panel-head">
-            <div>
-              <div class="panel-title">미체결 주문 <span class="panel-title-en">· Open Orders</span></div>
-              <div class="panel-sub" id="orderNote">불러오는 중…</div>
-            </div>
-          </div>
-          <div class="table-scroll">
-            <table class="history-table" id="orderTable">
-              <thead>
-                <tr><th>종목</th><th>구분</th><th>가격</th><th>수량</th><th>체결</th><th>경과</th><th>출처</th></tr>
-              </thead>
-              <tbody id="orderBody">
-                <tr><td colspan="7" class="empty-row">불러오는 중…</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
       </section>
 
-      <section id="section-signals" class="panel">
-        <!-- 미체결 주문의 그룹 펼치기와 같은 방식(캐럿 클릭)으로 패널 전체를
-             접었다 펼 수 있게 했다 - 페이지가 세로로 너무 길어져서 자주 안 보는
-             패널은 접어둘 수 있어야 한다는 요청. app.js의 initCollapsiblePanels가
-             처리한다. -->
-        <div class="panel-head panel-head-collapsible" data-collapse-target="signalGroups">
-          <div>
-            <div class="panel-title">진입 조건 현황</div>
-            <div class="panel-sub" id="signalNote">불러오는 중…</div>
-          </div>
-          <span class="panel-caret">▾</span>
-        </div>
-        <!-- 봇마다 진입 조건의 성격이 달라(박스 돌파 vs 순위 기반 롱숏) 표 구조 자체가
-             다르다. 정지된 박스형 봇은 서버가 아예 안 보내주고(순위형은 "정지"로 표시),
-             봇이 여럿이면 탭으로 하나씩 보여준다 - 이 컨테이너는 signals.js가 통째로 채운다. -->
-        <div id="signalGroups">
-          <div class="table-scroll">
-            <table class="history-table">
-              <tbody><tr><td class="empty-row">지표를 불러오는 중…</td></tr></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
 
-      <section id="section-charts" class="panel-grid">
+
+      <section id="section-charts" class="panel-grid" data-view="overview">
         <div class="panel chart-panel">
           <div class="panel-head">
             <div>
@@ -272,20 +182,39 @@
               <div class="panel-sub">현재 보유 기준</div>
             </div>
           </div>
-          <div class="donut-canvas-wrap">
-            <canvas id="sideDonut"></canvas>
-          </div>
-          <div class="donut-legend" id="donutLegend"></div>
+          <div class="dir-summary" id="dirSummary"></div>
         </div>
       </section>
 
-      <section id="section-history" class="panel">
-        <div class="panel-head panel-head-collapsible" data-collapse-target="historyBody">
+      <section id="section-signals" class="panel" data-view="signals">
+        <!-- 미체결 주문의 그룹 펼치기와 같은 방식(캐럿 클릭)으로 패널 전체를
+             접었다 펼 수 있게 했다 - 페이지가 세로로 너무 길어져서 자주 안 보는
+             패널은 접어둘 수 있어야 한다는 요청. app.js의 initCollapsiblePanels가
+             처리한다. -->
+        <div class="panel-head">
+          <div>
+            <div class="panel-title">진입 조건 현황</div>
+            <div class="panel-sub" id="signalNote">불러오는 중…</div>
+          </div>
+        </div>
+        <!-- 봇마다 진입 조건의 성격이 달라(박스 돌파 vs 순위 기반 롱숏) 표 구조 자체가
+             다르다. 정지된 박스형 봇은 서버가 아예 안 보내주고(순위형은 "정지"로 표시),
+             봇이 여럿이면 탭으로 하나씩 보여준다 - 이 컨테이너는 signals.js가 통째로 채운다. -->
+        <div id="signalGroups">
+          <div class="table-scroll">
+            <table class="history-table">
+              <tbody><tr><td class="empty-row">지표를 불러오는 중…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="section-history" class="panel" data-view="history">
+        <div class="panel-head">
           <div>
             <div class="panel-title">전체 청산 이력</div>
             <div class="panel-sub">최근 체결 기준</div>
           </div>
-          <span class="panel-caret">▾</span>
         </div>
         <!-- 좁은 화면에서 표가 페이지 전체를 옆으로 밀지 않도록 표만 따로 가로 스크롤.
              historyBody 전체가 접이식 패널의 대상이라 페이저도 표와 함께 접힌다. -->
@@ -303,14 +232,60 @@
         </div>
       </section>
 
+      <section id="section-manual" class="view-stack" data-view="history">
+        <!-- 봇이 모르는 내 매매.
+             freqtrade는 자기가 낸 주문만 알기 때문에, 앱/웹에서 직접 잡은 포지션과
+             직접 걸어둔 미체결 주문은 위 봇 카드에 절대 나오지 않는다.
+             이 두 패널은 바이낸스 계좌를 직접 조회해서 그 부분을 채운다. -->
+        <div class="panel" id="manualPanel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">수동 포지션</div>
+              <div class="panel-sub" id="manualNote">불러오는 중…</div>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="history-table" id="manualTable">
+              <thead>
+                <tr><th>종목</th><th>방향</th><th>배율</th><th>수량</th><th>진입가</th>
+                    <th>현재가</th><th>청산가</th><th>증거금</th><th>손익%</th><th>손익$</th></tr>
+              </thead>
+              <tbody id="manualBody">
+                <tr><td colspan="10" class="empty-row">불러오는 중…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel" id="orderPanel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">미체결 주문</div>
+              <div class="panel-sub" id="orderNote">불러오는 중…</div>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="history-table" id="orderTable">
+              <thead>
+                <tr><th>종목</th><th>구분</th><th>가격</th><th>수량</th><th>체결</th><th>경과</th><th>출처</th></tr>
+              </thead>
+              <tbody id="orderBody">
+                <tr><td colspan="7" class="empty-row">불러오는 중…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+
       <!-- ===== AI 시황 의견 (참고용, 자동매매와 무관) =====
            봇들은 전부 몇 달치 백테스트로 검증한 규칙으로 돌아가는데, 이건 LLM이
            그때그때 내놓는 의견이라 같은 방식으로 검증할 수가 없다. 그래서 주문에
            절대 연결하지 않고, 사람이 참고만 하는 화면으로 분리해뒀다. -->
-      <section id="section-ai" class="panel">
+      <section id="section-ai" class="panel" data-view="ai">
         <div class="panel-head">
           <div>
-            <div class="panel-title">AI 시황 의견 <span class="panel-title-en">· Reference only</span></div>
+            <div class="panel-title">AI 시황 의견</div>
             <div class="panel-sub">참고용 의견입니다 · 자동매매에 연결되어 있지 않습니다 · 30분마다, 큰 뉴스가 나오면 바로 갱신</div>
           </div>
         </div>
@@ -337,6 +312,22 @@
        보유 종목 줄을 누르면 그 코인 차트로 바뀐다(charts.js) - 좁은 화면에선
        이 패널이 전체 화면으로 떠서 보여준다. -->
   <aside class="side-panel">
+    <section id="section-market" class="panel market-panel" data-view="overview">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">실시간 시세</div>
+          <div class="panel-sub">Binance Futures</div>
+        </div>
+      </div>
+      <table class="market-table">
+        <thead>
+          <tr><th>페어</th><th>가격</th><th>24H 변동</th></tr>
+        </thead>
+        <tbody id="tickerBody">
+          <tr><td colspan="3" class="empty-row">시세 불러오는 중…</td></tr>
+        </tbody>
+      </table>
+    </section>
     <div class="side-panel-card coin-chart-card" id="coinChartCard" hidden>
       <div class="coin-chart-head">
         <div class="side-panel-title" id="coinChartTitle">–</div>
@@ -367,24 +358,22 @@
      모바일에서는 섹션 이동이 아예 불가능했다. 같은 .nav-item / data-target 을 쓰므로
      기존 클릭 핸들러가 그대로 동작한다. -->
 <nav class="mobile-nav">
-  <a class="nav-item active" data-target="section-overview"><span class="nav-icon">▦</span>개요</a>
-  <a class="nav-item" data-target="section-market"><span class="nav-icon">◎</span>시세</a>
-  <a class="nav-item" data-target="section-positions"><span class="nav-icon">⇄</span>포지션</a>
-  <a class="nav-item" data-target="section-signals"><span class="nav-icon">◈</span>신호</a>
-  <a class="nav-item" data-target="section-charts"><span class="nav-icon">📈</span>성과</a>
-  <a class="nav-item" data-target="section-history"><span class="nav-icon">⏱</span>내역</a>
-  <a class="nav-item" data-target="section-ai"><span class="nav-icon">✦</span>AI</a>
+  <a class="nav-item active" href="#overview" data-view="overview"><span class="nav-icon"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg></span>개요</a>
+  <a class="nav-item" href="#signals" data-view="signals"><span class="nav-icon"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.5"/></svg></span>신호</a>
+  <a class="nav-item" href="#history" data-view="history"><span class="nav-icon"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg></span>내역</a>
+  <a class="nav-item" href="#ai" data-view="ai"><span class="nav-icon"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 5.5h15v10h-9l-4.5 4v-4h-1.5z"/><path d="M8.5 10.5h7"/></svg></span>AI</a>
 </nav>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="app.js"></script>
-<script src="signals.js"></script>
-<script src="account.js"></script>
-<script src="headlines.js"></script>
-<script src="ai.js"></script>
+<script src="theme.js?v=20261110e"></script>
+<script src="app.js?v=20261110e"></script>
+<script src="signals.js?v=20261110e"></script>
+<script src="account.js?v=20261110e"></script>
+<script src="headlines.js?v=20261110e"></script>
+<script src="ai.js?v=20261110e"></script>
 
 <!-- 오른쪽 차트: tv.js 를 먼저 불러온 뒤 charts.js 가 위젯을 만든다. -->
 <script src="https://s3.tradingview.com/tv.js"></script>
-<script src="charts.js"></script>
+<script src="charts.js?v=20261110e"></script>
 </body>
 </html>

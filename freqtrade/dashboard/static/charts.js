@@ -10,25 +10,46 @@ const TV_COMMON = {
   autosize: true,
   interval: "1",
   timezone: "Asia/Seoul",
-  theme: "dark",
   style: "1",
   locale: "kr",
-  toolbar_bg: "#14161d",
   hide_top_toolbar: true,
   hide_legend: false,
   save_image: false,
-  backgroundColor: "#14161d",
-  gridColor: "rgba(255,255,255,0.06)",
+  // 국내 앱 관례: 상승 빨강 / 하락 파랑 (대시보드 손익 색과 같게, 2026-11-10)
+  overrides: {
+    "mainSeriesProperties.candleStyle.upColor": "#f04452",
+    "mainSeriesProperties.candleStyle.downColor": "#3182f6",
+    "mainSeriesProperties.candleStyle.borderUpColor": "#f04452",
+    "mainSeriesProperties.candleStyle.borderDownColor": "#3182f6",
+    "mainSeriesProperties.candleStyle.wickUpColor": "#f04452",
+    "mainSeriesProperties.candleStyle.wickDownColor": "#3182f6",
+  },
 };
+
+// 라이트/다크 모드에 맞춘 위젯 색 (theme.js). 위젯은 만든 뒤 색을 못 바꿔서
+// 테마를 바꾸면 아래 onThemeChange 에서 새로 만든다.
+function tvTheme() {
+  const dark = currentTheme() === "dark";
+  const bg = cssVar("--card");
+  return {
+    theme: dark ? "dark" : "light",
+    toolbar_bg: bg,
+    backgroundColor: bg,
+    gridColor: dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)",
+  };
+}
 
 function tvWidget(symbol, containerId, extra = {}) {
   if (!window.TradingView) return;
-  new TradingView.widget({ ...TV_COMMON, symbol, container_id: containerId, ...extra });
+  new TradingView.widget({ ...TV_COMMON, ...tvTheme(), symbol, container_id: containerId, ...extra });
 }
 
-tvWidget("BINANCE:BTCUSDT.P", "tvChartBtc");
-// 바이낸스 QQQ 무기한선물은 TradingView 표기로 끝에 ".P" 를 붙여야 한다
-tvWidget("BINANCE:QQQUSDT.P", "tvChartQqq");
+function drawDefaultCharts() {
+  tvWidget("BINANCE:BTCUSDT.P", "tvChartBtc");
+  // 바이낸스 QQQ 무기한선물은 TradingView 표기로 끝에 ".P" 를 붙여야 한다
+  tvWidget("BINANCE:QQQUSDT.P", "tvChartQqq");
+}
+drawDefaultCharts();
 
 let coinChartBase = null;
 
@@ -77,7 +98,7 @@ function markSelectedChartRows(base) {
     document.head.appendChild(st);
   }
   st.textContent = base
-    ? `tr[data-chart-base="${base}"] td { background: rgba(91, 141, 239, 0.16) !important; }`
+    ? `tr[data-chart-base="${base}"] td { background: var(--row-sel) !important; }`
     : "";
 }
 
@@ -124,4 +145,13 @@ document.addEventListener("mouseover", (e) => {
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && coinChartBase) restoreDefaultCharts();
+});
+
+onThemeChange(() => {
+  for (const id of ["tvChartBtc", "tvChartQqq"]) document.getElementById(id).innerHTML = "";
+  drawDefaultCharts();
+  // 종목 차트는 미리 만들어 둔 것까지 전부 버리고, 보고 있던 종목만 새로 만든다
+  for (const slot of coinSlots.values()) slot.remove();
+  coinSlots.clear();
+  if (coinChartBase) coinSlot(coinChartBase).classList.add("active");
 });
