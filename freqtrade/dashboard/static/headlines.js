@@ -99,6 +99,12 @@ function renderHeadlineList() {
   );
 }
 
+// AI 시황의 주요 이벤트는 처음 AI_EVENTS_FOLDED 개만 보이고 나머지는 버튼으로 펼친다
+// (2026-11-10 - 목록이 길어 시황 본문이 한참 아래로 밀렸다). 펼침 상태는 1분마다 다시
+// 그려져도 유지된다.
+const AI_EVENTS_FOLDED = 5;
+let aiEventsExpanded = false;
+
 function renderAiEvents() {
   const el = document.getElementById("aiEvents");
   if (!el) return;
@@ -106,7 +112,15 @@ function renderAiEvents() {
     setHTMLIfChanged(el, "");
     return;
   }
-  const rows = headlineItems
+  const shown = aiEventsExpanded ? headlineItems : headlineItems.slice(0, AI_EVENTS_FOLDED);
+  const hiddenCount = headlineItems.length - AI_EVENTS_FOLDED;
+  const toggle =
+    hiddenCount > 0
+      ? `<button type="button" class="ai-events-toggle" id="aiEventsToggle">${
+          aiEventsExpanded ? "접기 ▴" : `나머지 ${hiddenCount}건 더 보기 ▾`
+        }</button>`
+      : "";
+  const rows = shown
     .map(
       (e) => `
       <a class="ai-event" href="${escHtml(e.link)}" target="_blank" rel="noopener noreferrer">
@@ -123,11 +137,18 @@ function renderAiEvents() {
   setHTMLIfChanged(
     el,
     `<div class="ai-events">
-       <div class="ai-events-head">주요 이벤트 <span class="ai-score-sub">지난 24시간 · 코인/미국 증시 영향도 상위 뉴스 · AI 분류</span></div>
+       <div class="ai-events-head">주요 이벤트 <span class="ai-score-sub">지난 24시간 ${headlineItems.length}건 · 코인/미국 증시 영향도 상위 뉴스 · AI 분류</span></div>
        ${rows}
+       ${toggle}
      </div>`
   );
 }
+
+document.getElementById("aiEvents")?.addEventListener("click", (e) => {
+  if (!e.target.closest("#aiEventsToggle")) return;
+  aiEventsExpanded = !aiEventsExpanded;
+  renderAiEvents();
+});
 
 document.getElementById("headlineBar")?.addEventListener("click", (e) => {
   if (e.target.closest("a")) return; // 뉴스 글씨 = 원문 링크(새 탭)

@@ -190,7 +190,7 @@ function renderSignals(list) {
     const active = key === selectedSignalKey ? "active" : "";
     const dot = items[0].stopped ? "err" : "ok";
     tabs += `<button type="button" class="bot-tab sig-tab ${active}" data-sig="${key}">
-        <span class="dot ${dot}"></span>${items[0].bot_name}${items[0].stopped ? " · 정지" : ""}
+        <span class="dot ${dot}"></span>${botTabLabel(items[0].bot_name)}${items[0].stopped ? '<span class="bt-sub">정지</span>' : ""}
       </button>`;
     if (key === selectedSignalKey) html = `<div class="table-scroll">${table}</div>`;
   }
