@@ -1235,7 +1235,8 @@ def fetch_bot_summary(bot: dict, days: int = 14) -> dict:
                         "open_date": t.get("open_date"),
                         "close_date": t.get("close_date"),
                         "exit_reason": t.get("exit_reason"),
-                        "exit_reason_ko": exit_reason_ko(t.get("exit_reason")),
+                        # 복구 로직이 기록한 거래소 직접 청산은 사유가 비어 있을 때가 있다
+                        "exit_reason_ko": exit_reason_ko(t.get("exit_reason") or "sold_on_exchange"),
                     }
                     for t in sorted(
                         (t for t in recent.get("trades", []) if not t.get("is_open")),
@@ -1372,9 +1373,11 @@ def _drop_positions_closed_on_exchange(connected: list, acct: dict) -> None:
         if t.get("has_open_orders") or fresh:
             alive.add((bid, t.get("trade_id")))
             remaining[key] = max(remaining.get(key, 0.0) - need, 0.0)
-        elif remaining.get(key, 0.0) >= need * 0.99 and remaining.get(key, 0.0) > 0:
+        elif remaining.get(key, 0.0) > 0:
+            # 일부만 청산돼 계좌 수량이 기록보다 적어도(봇이 아직 반영 전) 남은 만큼은 보여준다.
+            # 더 최근 거래가 먼저 가져가므로, 옛 유령 거래는 남는 수량이 없으면 숨겨진다.
             alive.add((bid, t.get("trade_id")))
-            remaining[key] -= need
+            remaining[key] = max(remaining[key] - need, 0.0)
 
     for b in connected:
         live, gone = [], []
@@ -1556,7 +1559,7 @@ def exit_reason_ko(raw: str) -> str:
 BOT_CLOSE_MATCH_SEC = range(-3, 4)
 
 
-def _bot_closed_keys() -> set:
+def _bot_closed_keys() -> set | None:
     """(바이낸스 심볼, 초단위 UTC 타임스탬프) -> 각 봇이 자기 DB에 남긴 청산들.
 
     수동 청산 이력을 만들 때, 계좌 실현손익 이벤트가 이 키와 겹치면 이미 위의
@@ -1567,17 +1570,51 @@ def _bot_closed_keys() -> set:
     한계: 지금 컨테이너가 떠 있지 않은 봇(예: 중단된 v1, 예전 추세추종/평균회귀)의
     과거 청산은 이 함수가 알 방법이 없어 "수동"으로 잘못 표시될 수 있다. BOTS에
     현재 등록된 봇들의 최근 거래만 걸러낼 수 있다.
+
+    2026-11-09: 청산 주문 하나가 여러 번에 나눠 체결되면(FIL 숏 직접 청산이 26초에 걸쳐
+    체결) 계좌 실현손익도 여러 줄로 찍히는데, 마지막 체결 시각 하나만 봇 것으로 보니
+    앞쪽 체결들이 "수동 청산"으로 따로 잡혀 알림·청산이력이 3건이 됐다. 이제 그 거래의
+    청산 주문이 나간 순간부터 다 체결될 때까지 전 구간을 봇 것으로 본다. 열린 거래의
+    일부 청산(10/30 UNI 12개)도 같은 방식으로 봇 것이 된다.
+
+    2026-11-10: 봇 하나라도 거래 목록을 못 받으면 None 을 돌려준다. 예전엔 그 봇을 조용히
+    건너뛰어서, 봇이 잠깐 늦게 답한 순간 계산된 수동 청산 이력에 봇 청산 17건이 전부
+    "수동"으로 들어가 3분 캐시 동안 청산이력에 두 번씩 보였다.
     """
     keys = set()
     for bot in BOTS:
         try:
-            trades = call_bot(bot["url"], "/api/v1/trades", {"limit": 500}).get("trades", [])
+            trades = requests.get(
+                f"{bot['url']}/api/v1/trades", params={"limit": 500},
+                auth=(USERNAME, PASSWORD), timeout=10,
+            )
+            trades.raise_for_status()
+            trades = trades.json().get("trades", [])
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            if _offline_bots.get(bot["id"]):
+                try:
+                    trades = _offline_api(bot, "/api/v1/trades", {}).get("trades", [])
+                except Exception:  # noqa: BLE001
+                    return None
+            else:
+                return None
         except Exception:  # noqa: BLE001
-            continue
+            return None
         for t in trades:
+            sym = t["pair"].split(":")[0].replace("/", "")
+            exit_side = "buy" if t.get("is_short") else "sell"
+            for o in t.get("orders") or []:
+                if o.get("ft_order_side") not in (exit_side, "stoploss") or not o.get("filled"):
+                    continue
+                start = (o.get("order_timestamp") or 0) // 1000
+                end = (o.get("order_filled_timestamp") or t.get("close_timestamp") or 0) // 1000
+                if not start or not end:
+                    continue
+                end = min(end, start + 3600)  # 비정상적으로 긴 구간은 1시간까지만
+                for sec in range(start, end + 1):
+                    keys.add((sym, sec))
             if t.get("is_open") or not t.get("close_date"):
                 continue
-            sym = t["pair"].split(":")[0].replace("/", "")
             try:
                 ts = int(
                     datetime.strptime(t["close_date"], "%Y-%m-%d %H:%M:%S")
@@ -1687,6 +1724,10 @@ def _fetch_manual_pnl_raw() -> tuple:
         return _manual_pnl_raw_cache["data"] or (None, [])
 
     bot_keys = _bot_closed_keys()
+    if bot_keys is None:
+        # 봇 청산 목록을 못 받았다 - 이대로 계산하면 봇 청산이 전부 "수동"이 된다. 직전 값 유지
+        _manual_pnl_raw_cache["ts"] = now - MANUAL_PNL_TTL + 15  # 15초 뒤 재시도
+        return _manual_pnl_raw_cache["data"] or (None, [])
     manual = [
         x for x in raw
         if not any((x["symbol"], x["time"] // 1000 + d) in bot_keys for d in BOT_CLOSE_MATCH_SEC)
@@ -1774,6 +1815,10 @@ def fetch_manual_trade_history() -> list[dict]:
         return _manual_history_cache["data"] or []
 
     bot_keys = _bot_closed_keys()
+    if bot_keys is None:
+        # 봇 청산 목록을 못 받았다 - 이대로 계산하면 봇 청산이 전부 "수동"이 된다. 직전 값 유지
+        _manual_history_cache["ts"] = now - MANUAL_HISTORY_TTL + 15  # 15초 뒤 재시도
+        return _manual_history_cache["data"] or []
     raw.sort(key=lambda x: (x["symbol"], x["time"]))
 
     # 같은 청산이 부분체결로 여러 건 잡히는 경우가 실측에서 있었다(TQQQ 사례).
@@ -1954,6 +1999,8 @@ def webhook_relay():
             profit_amount = 0.0
         stake_currency = data.get("stake_currency", "USDT")
         exit_reason_raw = data.get("exit_reason", "")
+        if exit_reason_raw in ("", "None", None):
+            exit_reason_raw = "sold_on_exchange"  # 사유 없는 청산 = 거래소에서 직접 닫힌 것
         reason_ko = exit_reason_ko(exit_reason_raw)
         text = (
             f"[{bot_name}] [선물 청산]\n"
@@ -2258,17 +2305,23 @@ _position_gone_since: dict = {}  # (pair, side) -> 계좌에서 처음 안 보�
 
 
 def _reconcile_bot_trades() -> int:
-    """봇 기록엔 열려 있는데 계좌엔 없는 포지션을 그 봇이 거래소 기록으로 닫게 한다."""
+    """봇 기록엔 열려 있는데 계좌엔 없거나(전부 청산) 기록보다 적은(일부 청산) 포지션을
+    그 봇이 거래소 기록으로 맞추게 한다.
+
+    2026-10-30: 거래소 손절 주문을 쓰면서부터 freqtrade 자체 복구가 돌지 않는다(열린 손절
+    주문이 있으면 지갑 수량 확인을 건너뛴다). 그래서 앱에서 UNI 25개 중 12개만 정리한 것을
+    봇이 몰라 기록은 25개로 남았다 - 이제 일부 청산도 여기서 찾아 맞춘다."""
     try:
         rows = binance_signed("/fapi/v2/positionRisk")
     except Exception:  # noqa: BLE001
         return 0
-    held = set()
+    held: dict = {}  # (pair, side) -> 계좌 수량
     for p in rows:
         amt = float(p.get("positionAmt") or 0)
         if amt:
             base = p["symbol"][:-4] if p["symbol"].endswith("USDT") else p["symbol"]
-            held.add((f"{base}/USDT:USDT", "short" if amt < 0 else "long"))
+            k = (f"{base}/USDT:USDT", "short" if amt < 0 else "long")
+            held[k] = held.get(k, 0.0) + abs(amt)
     now = time.time()
     fixed = 0
     seen_gone = set()
@@ -2281,8 +2334,10 @@ def _reconcile_bot_trades() -> int:
             continue
         for t in trades:
             key = (t["pair"], "short" if t.get("is_short") else "long")
-            if key in held or t.get("has_open_orders"):
+            if t.get("has_open_orders"):
                 continue
+            if held.get(key, 0.0) >= float(t.get("amount") or 0) * 0.99:
+                continue  # 계좌에 기록만큼 그대로 있음
             seen_gone.add(key)
             first = _position_gone_since.setdefault(key, now)
             if now - first < RECONCILE_MIN_AGE_SEC:
@@ -2292,8 +2347,8 @@ def _reconcile_bot_trades() -> int:
                 continue
             _reconcile_tried[tk] = now
             # reload 는 그 페어에서 진입 이후 체결된 주문을 전부 이 거래에 붙인다. 계좌를
-            # 같이 쓰는 다른 봇이 나중에 같은 코인을 거래했으면 그 주문까지 섞이므로,
-            # 진입 1건 + 청산 1건만 있을 때만 한다(아니면 손대지 않고 수동으로 남긴다).
+            # 같이 쓰는 다른 봇이나 새 수동 포지션의 주문이 섞이면 안 되므로, "진입 1건 +
+            # 그 반대 방향(청산) 주문들"만 있을 때만 한다(아니면 손대지 않고 수동으로 남긴다).
             try:
                 base = t["pair"].split("/")[0]
                 orders = binance_signed("/fapi/v1/allOrders", {
@@ -2304,7 +2359,10 @@ def _reconcile_bot_trades() -> int:
                 since_ms = int(t["open_timestamp"]) - 2000
                 filled = [o for o in orders if float(o.get("executedQty") or 0) > 0
                           and int(o.get("updateTime") or 0) >= since_ms]
-                if len(filled) != 2:
+                entry_side = "SELL" if t.get("is_short") else "BUY"
+                entries = [o for o in filled if o.get("side") == entry_side]
+                exits = [o for o in filled if o.get("side") != entry_side]
+                if len(entries) != 1 or not exits:
                     _reconcile_tried[tk] = float("inf")
                     continue
             except Exception:  # noqa: BLE001
@@ -2476,17 +2534,21 @@ def _check_profit_milestones_once() -> None:
     # 봇이 아직 모르는 것)는 빼야 한다(10/23 ADA: 직접 청산 뒤 +10% 알림이 갔다).
     acct = fetch_account()
     held = ({(p["base"], p["side"]) for p in acct.get("positions", [])} if acct.get("ok") else None)
+    bot_positions = set()  # 봇이 들고 있는 (종목, 방향) - 수동 포지션 판정에서 뺀다
+    all_bots_ok = True
     for bot in BOTS:
         if _offline_bots.get(bot["id"]):
             continue
         try:
             trades = call_bot(bot["url"], "/api/v1/status")
         except Exception:  # noqa: BLE001
+            all_bots_ok = False
             continue
         checked_bots.add(bot["id"])
         for t in trades:
             key = f"{bot['id']}:{t['trade_id']}"
             open_keys.add(key)
+            bot_positions.add((t["pair"].split("/")[0], "short" if t.get("is_short") else "long"))
             if held is not None and (t["pair"].split("/")[0], "short" if t.get("is_short") else "long") not in held:
                 continue
             pct = t.get("profit_pct")
@@ -2506,12 +2568,14 @@ def _check_profit_milestones_once() -> None:
                                 t.get("profit_abs") or 0, t["open_rate"], t.get("current_rate") or 0,
                                 extra, "직접 정리하려면 바이낸스에서 청산하세요(봇 기록에 자동 반영).")
 
-    # 수동 포지션(봇이 아닌 계좌 포지션) - 같은 종목·방향·진입가가 하나의 포지션
+    # 수동 포지션(봇이 아닌 계좌 포지션) - 같은 종목·방향·진입가가 하나의 포지션.
+    # 봇 API 가 하나라도 응답하지 않은 회차엔 봇/수동 구분이 불확실해 건너뛴다 - 10/30 봇 API 가
+    # 잠깐 멈춘 사이 계좌 조회의 "봇 관리" 표시가 빠져 XRP·UNI 봇 포지션에 "[수동] -10%" 가 갔다.
     manual_checked = False
-    if acct.get("ok"):
+    if acct.get("ok") and all_bots_ok:
         manual_checked = True
         for p in acct.get("positions", []):
-            if p.get("managed"):
+            if p.get("managed") or (p["base"], p["side"]) in bot_positions:
                 continue
             key = f"manual:{p['symbol']}:{p['side']}:{p['entry_price']}"
             open_keys.add(key)
