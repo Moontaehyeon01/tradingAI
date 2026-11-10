@@ -8,7 +8,6 @@ const COIN_COLORS = {
 };
 
 let equityChart = null;
-let sideDonut = null;
 let lastSummary = null;
 // 기간(14/30/60일)별로 마지막으로 받은 요약. 기간 버튼을 누르면 서버 응답을 기다리지
 // 않고 이걸로 그래프를 바로 바꾼 뒤, 새 데이터가 오면 다시 그린다(2026-10-17 - 버튼을
@@ -151,7 +150,7 @@ function renderTickers(tickers) {
   const html = tickers
     .map((t) => {
       const symbol = t.symbol.replace("USDT", "");
-      const color = COIN_COLORS[symbol] || "#5b8def";
+      const color = COIN_COLORS[symbol] || "#7f9fb3";
       const cls = pnlClass(t.change_pct);
       return `
         <tr class="chart-row" data-chart-base="${symbol}" title="누르면 오른쪽에 ${symbol} 차트">
@@ -251,7 +250,19 @@ function renderStats(summary) {
   const openCount =
     connectedBots.reduce((sum, b) => sum + b.open_trades.length, 0) +
     (summary.combined.manual_position_count || 0);
-  document.getElementById("statOpenCount").textContent = openCount;
+  // 카드 숫자는 보유 포지션의 평가손익(봇 + 수동), 개수는 옆 칩에(2026-11-10).
+  // manual_unrealized 가 null 이면 계좌 조회 실패 - 봇 것만 합치고 칩에 표시한다.
+  const botOpenAbs = connectedBots.reduce(
+    (sum, b) => sum + b.open_trades.reduce((a, t) => a + (t.profit_abs || 0), 0),
+    0
+  );
+  const manualOpen = summary.combined.manual_unrealized;
+  const openAbs = botOpenAbs + (manualOpen || 0);
+  const openEl = document.getElementById("statOpenCount");
+  openEl.textContent = openCount ? `$${fmtUsd(openAbs)}` : "–";
+  openEl.className = `stat-value ${openCount ? pnlClass(openAbs) : ""}`;
+  document.getElementById("statOpenChip").textContent =
+    manualOpen === null || manualOpen === undefined ? `${openCount}개 · 수동 제외` : `${openCount}개 보유`;
 
   const totalTrades = connectedBots.reduce((sum, b) => sum + (b.trade_count || 0), 0);
   // 봇별 승률을 단순 평균하면 안 된다 - 거래가 0건인 봇(예: 막 시작한 봇)도
@@ -268,24 +279,38 @@ function renderStats(summary) {
 
 /* ---------------- Equity chart ---------------- */
 
-// 봇별 그래프 색상. 봇이 추가/교체돼도 순서대로 배정된다.
-const BOT_COLORS = ["#5b8def", "#f59e0b", "#8b5cf6", "#10b981", "#f43f5e"];
+// 전략별 그래프 색 (2026-11-10, dataviz 스킬 기준으로 다시 정함)
+// - 색은 전략에 고정한다. 예전엔 "몇 번째로 연결된 봇이냐"로 색을 줘서, 봇 하나가
+//   빠지면 남은 전략 색이 바뀌었다(RSI 가 어제는 파랑, 오늘은 주황).
+// - 실제 색은 style.css 의 --series-1..5 (보라 / 주황 / 청록 / 노랑 / 자홍). 라이트·다크
+//   각각 색각이상 시뮬레이션까지 validate_palette.js 로 검증한 값이다. 수익=빨강,
+//   손실=파랑과 헷갈리지 않게 빨강·파랑은 전략 색에서 뺐다.
+const SERIES_SLOT = { xsectrsi: 1, xsectmomentum: 2, manual: 3 };
 
-function hexToRgba(hex, a) {
-  const n = parseInt(hex.slice(1), 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+function seriesColor(key, extraIndex = 0) {
+  const slot = SERIES_SLOT[key] || 4 + extraIndex;
+  // 5개를 넘는 전략은 새 색을 만들지 않고 회색 하나로 묶는다(색을 돌려 쓰면 구분이 안 된다)
+  return slot <= 5 ? cssVar(`--series-${slot}`) : cssVar("--text-faint");
+}
+
+function escText(v) {
+  return String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
+function botShortName(b) {
+  return b.name.replace(/\s*\(.*\)\s*/, "") || b.id;
 }
 
 // 누적/일별 그래프에 같이 쓰는 전략별 일별 손익 시리즈
 function pnlSeries(summary) {
   // 봇 목록을 그대로 따라가도록 동적으로 구성한다.
-  // (예전엔 bots[0]="추세추종", bots[1]="평균회귀"로 하드코딩돼 있어서,
-  //  전략을 교체하면 새 전략이 옛 이름으로 표시되고 없는 봇은 빈 선으로 남았다)
+  let extra = 0;
   const series = summary.bots
     .filter((b) => b.connected)
-    .map((b, i) => ({
-      label: b.name.replace(/\s*\(.*\)\s*/, "") || b.id,
-      color: BOT_COLORS[i % BOT_COLORS.length],
+    .map((b) => ({
+      key: b.id,
+      label: botShortName(b),
+      color: seriesColor(b.id, SERIES_SLOT[b.id] ? 0 : extra++),
       daily: b.daily || [],
     }));
   // 수동 매매도 봇과 같은 그래프에 한 시리즈로 얹는다 - server.py 의
@@ -293,26 +318,113 @@ function pnlSeries(summary) {
   // 값이 전부 0인 빈 시리즈를 만들지 않도록, 실제로 손익이 있을 때만 넣는다.
   const manualDaily = summary.combined?.manual_daily || [];
   if (manualDaily.some((d) => Math.abs(d.abs_profit) > 0.0001)) {
-    series.push({
-      label: "수동",
-      color: BOT_COLORS[series.length % BOT_COLORS.length],
-      daily: manualDaily,
-    });
+    series.push({ key: "manual", label: "수동", color: seriesColor("manual"), daily: manualDaily });
   }
   return series;
 }
 
-function renderPnlLegend(series) {
+// 범례는 그래프 모양을 따른다: 선 그래프는 짧은 선, 막대는 네모
+function renderPnlLegend(items, shape = "line") {
   const legendEl = document.getElementById("equityLegend");
-  if (legendEl) {
-    legendEl.innerHTML = series
+  if (!legendEl) return;
+  setHTMLIfChanged(
+    legendEl,
+    items
       .map(
         (s) =>
-          `<span class="legend-item"><i class="dotcolor" style="background:${s.color}"></i>${s.label}</span>`
+          `<span class="legend-item"><i class="${shape === "line" ? "linekey" : "swatch"}" style="background:${s.color}"></i>${escText(s.label)}</span>`
       )
-      .join("");
-  }
+      .join("")
+  );
 }
+
+// ---- 그래프 공통: 툴팁·축 색은 테마 토큰에서 ----
+function tooltipTheme() {
+  return {
+    backgroundColor: cssVar("--card"),
+    borderColor: cssVar("--border"),
+    borderWidth: 1,
+    titleColor: cssVar("--text-faint"),
+    bodyColor: cssVar("--text"),
+    footerColor: cssVar("--text-dim"),
+    titleFont: { family: "Pretendard Variable", weight: "500" },
+    bodyFont: { family: "Pretendard Variable", weight: "600" },
+    footerFont: { family: "Pretendard Variable", weight: "500" },
+    padding: 10,
+  };
+}
+
+function axesTheme() {
+  return {
+    x: { grid: { display: false }, border: { color: cssVar("--border") }, ticks: { color: cssVar("--text-faint"), font: { size: 11 } } },
+    y: {
+      border: { display: false },
+      // 0 선만 한 단계 진하게 - 손익이 플러스인지 마이너스인지가 이 그래프의 핵심
+      grid: { color: (c) => (c.tick && c.tick.value === 0 ? cssVar("--text-faint") : cssVar("--grid")) },
+      ticks: { color: cssVar("--text-faint"), font: { size: 11, family: "Pretendard Variable" }, maxTicksLimit: 6 },
+    },
+  };
+}
+
+// 마우스 위치의 날짜에 세로 실선 하나(선을 정확히 겨누지 않아도 그날 값이 다 보인다)
+const crosshairPlugin = {
+  id: "crosshair",
+  beforeDatasetsDraw(chart) {
+    const active = chart.tooltip?.getActiveElements?.() || [];
+    if (!active.length) return;
+    const x = Math.round(active[0].element.x) + 0.5;
+    const { top, bottom } = chart.chartArea;
+    const c = chart.ctx;
+    c.save();
+    c.strokeStyle = cssVar("--text-faint");
+    c.lineWidth = 1;
+    c.beginPath();
+    c.moveTo(x, top);
+    c.lineTo(x, bottom);
+    c.stroke();
+    c.restore();
+  },
+};
+
+// 선 끝에 점 + 전략 이름(글자는 회색 글자색, 색은 점과 선이 맡는다).
+// 끝이 서로 붙어 있으면 이름을 겹쳐 쌓지 않고 범례에 맡긴다.
+const endLabelPlugin = {
+  id: "endLabels",
+  afterDatasetsDraw(chart) {
+    const items = [];
+    chart.data.datasets.forEach((ds, i) => {
+      const meta = chart.getDatasetMeta(i);
+      if (meta.hidden || !meta.data.length) return;
+      const pt = meta.data[meta.data.length - 1];
+      items.push({ x: pt.x, y: pt.y, label: ds.label, color: ds.borderColor });
+    });
+    const c = chart.ctx;
+    const surface = cssVar("--card");
+    c.save();
+    for (const it of items) {
+      c.beginPath();
+      c.arc(it.x, it.y, 6, 0, Math.PI * 2);
+      c.fillStyle = surface;
+      c.fill();
+      c.beginPath();
+      c.arc(it.x, it.y, 4, 0, Math.PI * 2);
+      c.fillStyle = it.color;
+      c.fill();
+    }
+    c.font = '600 11px "Pretendard Variable", sans-serif';
+    c.textBaseline = "middle";
+    c.fillStyle = cssVar("--text-dim");
+    let lastY = -Infinity;
+    for (const it of [...items].sort((a, b) => a.y - b.y)) {
+      if (it.y - lastY < 14) continue;
+      c.fillText(it.label, it.x + 9, it.y);
+      lastY = it.y;
+    }
+    c.restore();
+  },
+};
+
+const signed = (v, d = 2) => `${v >= 0 ? "+" : ""}${v.toFixed(d)}`;
 
 // 그래프 탭: "cum"(누적 손익 추이, 선) / "daily"(일별 손익 추이, 막대). 새로고침해도 유지.
 let pnlView = (() => {
@@ -354,26 +466,29 @@ function renderEquityChart(summary) {
   );
   const labels = longest.map((d) => d.date.slice(5));
 
-  // 범례도 실제 봇에 맞춰 다시 그림
-  renderPnlLegend(series);
+  renderPnlLegend(series, "line");
 
-  const datasets = series.map((s) => {
-    const grad = ctx.getContext("2d").createLinearGradient(0, 0, 0, 240);
-    grad.addColorStop(0, hexToRgba(s.color, 0.33));
-    grad.addColorStop(1, hexToRgba(s.color, 0));
-    return {
-      label: s.label,
-      data: cumulative(s.daily),
-      pctData: cumulativePct(s.daily),
-      borderColor: s.color,
-      backgroundColor: grad,
-      fill: true,
-      tension: 0.4,
-      pointRadius: 0,
-      pointHoverRadius: 4,
-      borderWidth: 2,
-    };
-  });
+  // 선만 그린다. 전략마다 아래를 칠하면 겹친 면이 "합계"처럼 읽힌다.
+  const datasets = series.map((s) => ({
+    key: s.key,
+    label: s.label,
+    data: cumulative(s.daily),
+    pctData: cumulativePct(s.daily),
+    borderColor: s.color,
+    backgroundColor: s.color,
+    fill: false,
+    tension: 0.3,
+    cubicInterpolationMode: "monotone", // 곡선이 실제 값보다 위아래로 튀지 않게
+    borderWidth: 2,
+    borderCapStyle: "round",
+    borderJoinStyle: "round",
+    pointRadius: 0,
+    pointHitRadius: 12,
+    pointHoverRadius: 4,
+    pointHoverBorderWidth: 2,
+    pointHoverBorderColor: cssVar("--card"),
+    pointHoverBackgroundColor: s.color,
+  }));
 
   // 시작 직후엔 일별 손익이 전부 0이라 그래프가 텅 빈 직선으로 보여서
   // 마치 깨진 것처럼 보임 -> 의미 있는 데이터가 없으면 안내 문구로 대체
@@ -406,96 +521,78 @@ function renderEquityChart(summary) {
   equityChart = new Chart(ctx, {
     type: "line",
     data: { labels, datasets },
+    plugins: [crosshairPlugin, endLabelPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      layout: { padding: { right: 78, top: 6 } }, // 선 끝 이름 자리("Momentum" 까지)
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: { display: false },
         tooltip: {
-          backgroundColor: "#1b1e27",
-          borderColor: "#262a35",
-          borderWidth: 1,
-          titleColor: "#8b90a0",
-          bodyColor: "#eef0f4",
-          bodyFont: { family: "JetBrains Mono" },
-          padding: 10,
+          ...tooltipTheme(),
+          usePointStyle: true,
           callbacks: {
-            // 그래프 선 자체는 금액만 그리지만, 마우스를 올리면(또는 탭하면)
-            // 그 시점의 수익률(%)과 수익금($)을 한 줄에 같이 보여줌
+            // 툴팁 키는 네모 대신 짧은 선, 값이 먼저 오고 전략 이름이 뒤에
+            labelPointStyle: () => ({ pointStyle: "line", rotation: 0 }),
+            labelColor: (c) => ({ borderColor: c.dataset.borderColor, backgroundColor: c.dataset.borderColor, borderWidth: 2 }),
             label: (context) => {
               const ds = context.dataset;
               const amt = context.parsed.y;
               const pct = ds.pctData ? ds.pctData[context.dataIndex] : null;
-              const amtStr = `${amt >= 0 ? "+" : ""}${amt.toFixed(2)} USDT`;
-              const pctStr = pct === null ? "" : ` (${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%)`;
-              return `${ds.label}: ${amtStr}${pctStr}`;
+              const pctStr = pct === null ? "" : ` (${signed(pct)}%)`;
+              return `${signed(amt)} USDT${pctStr}  ${ds.label}`;
             },
           },
         },
       },
-      scales: {
-        x: { grid: { display: false }, ticks: { color: "#565b6b", font: { size: 10 } } },
-        y: {
-          grid: { color: "#1e222c" },
-          ticks: { color: "#565b6b", font: { size: 10, family: "JetBrains Mono" } },
-        },
-      },
+      scales: axesTheme(),
     },
   });
 }
 
-/* ---------------- Side donut ---------------- */
-
+/* ---------------- 포지션 방향 ----------------
+   2조각짜리 도넛은 두 숫자를 각도로 비교하게 만들 뿐이라(dataviz: "2-slice pie" 금지),
+   롱/숏 비율은 긴 막대 하나로, 숫자는 그 아래 표로 보여준다(2026-11-10).
+   함수 이름은 호출하는 곳이 많아 그대로 둔다. */
 function renderDonut(summary) {
-  const ctx = document.getElementById("sideDonut");
-  let longs = 0;
-  let shorts = 0;
+  const el = document.getElementById("dirSummary");
+  if (!el) return;
+  const rows = [];
   summary.bots.forEach((b) => {
     if (!b.connected) return;
-    b.open_trades.forEach((t) => (t.is_short ? shorts++ : longs++));
+    let l = 0;
+    let sh = 0;
+    (b.open_trades || []).forEach((t) => (t.is_short ? sh++ : l++));
+    if (l + sh) rows.push({ name: botShortName(b), l, s: sh });
   });
-  // 봇이 여는 포지션뿐 아니라 계좌에 실제로 떠 있는 수동 포지션도 방향에 넣는다
-  // (server.py 의 manual_longs/manual_shorts - 화이트리스트 밖 페어라 봇은
-  // 존재 자체를 모르는 포지션까지 바이낸스 직접 조회로 잡아온다).
-  longs += summary.combined.manual_longs || 0;
-  shorts += summary.combined.manual_shorts || 0;
+  // 봇이 모르는 수동 포지션도 계좌 기준으로 넣는다(server.py manual_longs/shorts)
+  const ml = summary.combined.manual_longs || 0;
+  const ms = summary.combined.manual_shorts || 0;
+  if (ml + ms) rows.push({ name: "수동", l: ml, s: ms });
 
+  const longs = rows.reduce((a, r) => a + r.l, 0);
+  const shorts = rows.reduce((a, r) => a + r.s, 0);
   const total = longs + shorts;
-  const legend = document.getElementById("donutLegend");
-  setHTMLIfChanged(
-    legend,
-    `
-    <div class="donut-legend-item">
-      <span class="donut-legend-left"><i class="dotcolor" style="background:#10b981"></i>롱</span>
-      <span class="donut-legend-val">${longs}</span>
-    </div>
-    <div class="donut-legend-item">
-      <span class="donut-legend-left"><i class="dotcolor" style="background:#f43f5e"></i>숏</span>
-      <span class="donut-legend-val">${shorts}</span>
-    </div>`
-  );
-
-  const data = total === 0 ? [1] : [longs, shorts];
-  const colors = total === 0 ? ["#262a35"] : ["#10b981", "#f43f5e"];
-
-  if (sideDonut) {
-    sideDonut.data.datasets[0].data = data;
-    sideDonut.data.datasets[0].backgroundColor = colors;
-    sideDonut.update("none");
+  if (!total) {
+    setHTMLIfChanged(el, `<div class="dir-empty">보유 중인 포지션이 없습니다</div>`);
     return;
   }
-
-  sideDonut = new Chart(ctx, {
-    type: "doughnut",
-    data: { datasets: [{ data, backgroundColor: colors, borderWidth: 0 }] },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      cutout: "72%",
-      plugins: { legend: { display: false }, tooltip: { enabled: total > 0 } },
-    },
-  });
+  const pct = (n) => Math.round((n / total) * 100);
+  const seg = (cls, n, name) =>
+    n ? `<div class="dir-seg ${cls}" style="flex:${n}" title="${name} ${n}개 · ${pct(n)}%">${n}</div>` : "";
+  setHTMLIfChanged(
+    el,
+    `<div class="dir-bar" role="img" aria-label="롱 ${longs}개 ${pct(longs)}%, 숏 ${shorts}개 ${pct(shorts)}%">${seg("long", longs, "롱")}${seg("short", shorts, "숏")}</div>
+    <div class="dir-legend"><span><i class="swatch" style="background:var(--green)"></i>롱</span><span><i class="swatch" style="background:var(--red)"></i>숏</span></div>
+    <table class="dir-table">
+      <thead><tr><th></th><th>롱</th><th>숏</th></tr></thead>
+      <tbody>
+        ${rows.map((r) => `<tr><td>${escText(r.name)}</td><td>${r.l}</td><td>${r.s}</td></tr>`).join("")}
+        <tr class="dir-total"><td>합계</td><td>${longs}</td><td>${shorts}</td></tr>
+      </tbody>
+    </table>`
+  );
 }
 
 /* ---------------- Position cards ---------------- */
@@ -664,6 +761,15 @@ document.addEventListener("click", (e) => {
 
 // 봇 카드 헤더의 이름 자리 자체가 탭이다 - 전체 봇 목록을 받아 탭들을
 // 그리고, selectedBotId 에 해당하는 봇의 내용만 카드 나머지에 채운다.
+// 봇 탭 이름: "RSI (RSI 순위)" -> 굵은 "RSI" + 작은 "RSI 순위".
+// 폰에서는 괄호 설명을 숨기고 한 줄로만 보여준다(예전엔 글자 단위로 줄이 깨졌다).
+function botTabLabel(name) {
+  const m = String(name || "").match(/^(.*?)\s*\((.*)\)\s*$/);
+  const main = m ? m[1] : name;
+  const sub = m ? `<span class="bt-sub">${escText(m[2])}</span>` : "";
+  return `<span class="bt-main">${escText(main)}</span>${sub}`;
+}
+
 function renderBotTitleTabs(bots, selectedBotId) {
   return `<div class="bot-title-tabs">${bots
     .map((b) => {
@@ -671,7 +777,7 @@ function renderBotTitleTabs(bots, selectedBotId) {
       // 초록 = 연결됐고 가동 중, 빨강 = 정지 중이거나 연결 안 됨 (정지된 봇이 초록이라 헷갈렸음)
       const dotCls = b.connected && b.state === "running" ? "ok" : "err";
       return `<button type="button" class="bot-tab ${active}" data-bot="${b.id}">
-        <span class="dot ${dotCls}"></span>${b.name}
+        <span class="dot ${dotCls}"></span>${botTabLabel(b.name)}
       </button>`;
     })
     .join("")}</div>`;
@@ -832,11 +938,20 @@ document.getElementById("equityPeriodToggle")?.addEventListener("click", (e) => 
 });
 
 // ---------------- 일별 손익 추이 (막대) ----------------
-// 날짜마다 그날 청산해서 확정된 손익을 전략별로 쌓아 보여준다(미실현 손익 제외).
+// 날짜마다 그날 청산해서 확정된 손익의 "합계"를 막대 하나로 그린다(미실현 손익 제외).
+// 예전엔 전략별로 쌓았는데, 같은 날 한 전략은 +, 다른 전략은 - 이면 막대가 0선 위아래로
+// 갈라져 합계를 읽을 수 없었다. 이 그래프의 질문은 "그날 벌었나 잃었나" 하나라서
+// 0선 기준 위(수익, 빨강)/아래(손실, 파랑)로만 나누고, 전략별 내역은 툴팁에 둔다.
 function renderDailyChart(summary) {
   const ctx = document.getElementById("dailyChart");
   const series = pnlSeries(summary);
-  renderPnlLegend(series);
+  renderPnlLegend(
+    [
+      { label: "수익일", color: "var(--green)" },
+      { label: "손실일", color: "var(--red)" },
+    ],
+    "bar"
+  );
 
   const longest = series.reduce((best, s) => (s.daily.length > best.length ? s.daily : best), []);
   const labels = longest.map((d) => d.date.slice(5));
@@ -863,35 +978,34 @@ function renderDailyChart(summary) {
   ctx.style.visibility = hasSignal ? "visible" : "hidden";
   if (!hasSignal && !dailyChart) return;
 
-  const datasets = series.map((s) => ({
-    label: s.label,
-    data: s.daily.map((d) => d.abs_profit),
-    counts: s.daily.map((d) => d.trade_count || 0),
-    backgroundColor: hexToRgba(s.color, 0.85),
-    borderRadius: 3,
-    maxBarThickness: 28,
-    stack: "pnl",
-  }));
+  const up = cssVar("--green");
+  const down = cssVar("--red");
+  const colors = totals.map((v) => (v >= 0 ? up : down));
 
-  const sameShape =
-    dailyChart &&
-    dailyChart.data.datasets.length === datasets.length &&
-    dailyChart.data.datasets.every((d, i) => d.label === datasets[i].label);
-  if (sameShape) {
+  if (dailyChart) {
     dailyChart.data.labels = labels;
-    datasets.forEach((d, i) => {
-      dailyChart.data.datasets[i].data = d.data;
-      dailyChart.data.datasets[i].counts = d.counts;
-    });
-    dailyChart.$totals = totals;
+    dailyChart.data.datasets[0].data = totals;
+    dailyChart.data.datasets[0].backgroundColor = colors;
+    dailyChart.$series = series;
     dailyChart.$counts = counts;
     dailyChart.update("none");
     return;
   }
-  if (dailyChart) dailyChart.destroy();
   dailyChart = new Chart(ctx, {
     type: "bar",
-    data: { labels, datasets },
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "하루 손익",
+          data: totals,
+          backgroundColor: colors,
+          borderRadius: 4, // 끝만 둥글게, 0선 쪽은 각지게(borderSkipped 기본값)
+          maxBarThickness: 24,
+          categoryPercentage: 0.8,
+        },
+      ],
+    },
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -899,42 +1013,29 @@ function renderDailyChart(summary) {
       plugins: {
         legend: { display: false },
         tooltip: {
-          backgroundColor: "#1b1e27",
-          borderColor: "#262a35",
-          borderWidth: 1,
-          titleColor: "#8b90a0",
-          bodyColor: "#eef0f4",
-          footerColor: "#eef0f4",
-          bodyFont: { family: "JetBrains Mono" },
-          footerFont: { family: "JetBrains Mono", weight: "700" },
-          padding: 10,
+          ...tooltipTheme(),
+          displayColors: false,
           callbacks: {
             label: (c) => {
-              const v = c.parsed.y;
-              const n = c.dataset.counts ? c.dataset.counts[c.dataIndex] : 0;
-              if (!v && !n) return null; // 그날 거래 없는 전략은 생략
-              return `${c.dataset.label}: ${v >= 0 ? "+" : ""}${v.toFixed(2)} USDT (${n}건)`;
+              const n = dailyChart.$counts[c.dataIndex];
+              return `${signed(c.parsed.y)} USDT · 청산 ${n}건`;
             },
+            // 전략별 내역(그날 거래 없는 전략은 생략)
             footer: (items) => {
               if (!items.length) return "";
               const i = items[0].dataIndex;
-              const t = dailyChart.$totals[i];
-              return `합계: ${t >= 0 ? "+" : ""}${t.toFixed(2)} USDT · 청산 ${dailyChart.$counts[i]}건`;
+              return dailyChart.$series
+                .map((s) => ({ s, d: s.daily[i] }))
+                .filter(({ d }) => d && (Math.abs(d.abs_profit) > 0.0001 || d.trade_count))
+                .map(({ s, d }) => `${s.label}  ${signed(d.abs_profit)} USDT (${d.trade_count || 0}건)`);
             },
           },
         },
       },
-      scales: {
-        x: { stacked: true, grid: { display: false }, ticks: { color: "#565b6b", font: { size: 10 } } },
-        y: {
-          stacked: true,
-          grid: { color: "#1e222c" },
-          ticks: { color: "#565b6b", font: { size: 10, family: "JetBrains Mono" } },
-        },
-      },
+      scales: axesTheme(),
     },
   });
-  dailyChart.$totals = totals;
+  dailyChart.$series = series;
   dailyChart.$counts = counts;
 }
 
@@ -1106,26 +1207,53 @@ document.getElementById("alertFilters")?.addEventListener("click", (e) => {
   document.getElementById("alertModal").scrollTop = 0; // 스크롤은 모달 전체가 한다
 });
 
-/* ---------------- Nav smooth scroll ---------------- */
+/* ---------------- 화면 전환 (2026-11-10) ----------------
+   상단 메뉴(모바일은 하단바)가 스크롤 이동 대신 화면을 바꾼다.
+   현재 화면은 주소 끝(#signals 등)에 남겨서 새로고침·뒤로가기에도 유지된다.
+   첫 화면은 index.html <head> 가 CSS 보다 먼저 정한다. */
+const VIEWS = ["overview", "signals", "history", "ai"];
 
-document.querySelectorAll(".nav-item").forEach((item) => {
-  item.addEventListener("click", () => {
-    document.querySelectorAll(".nav-item").forEach((i) => i.classList.remove("active"));
-    // 사이드바와 모바일 하단바에 같은 항목이 하나씩 있으므로 둘 다 활성 표시
-    document
-      .querySelectorAll(`.nav-item[data-target="${item.dataset.target}"]`)
-      .forEach((i) => i.classList.add("active"));
-    const target = document.getElementById(item.dataset.target);
-    if (!target) return;
-    target.scrollIntoView({ behavior: "auto", block: "start" });
-    // 클릭한 섹션이 잠깐 반짝여서 "여기로 이동했다"는 게 눈에 보이게 함
-    target.classList.remove("nav-flash");
-    // reflow를 강제해서 같은 섹션을 연달아 클릭해도 애니메이션이 다시 재생되게 함
-    void target.offsetWidth;
-    target.classList.add("nav-flash");
-    target.addEventListener("animationend", () => target.classList.remove("nav-flash"), { once: true });
+function setView(view, push = true) {
+  if (!VIEWS.includes(view)) view = "overview";
+  document.documentElement.dataset.view = view;
+  document.querySelectorAll(".nav-item[data-view]").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
+  const content = document.querySelector(".content");
+  if (content) content.scrollTop = 0;
+  if (push && location.hash !== `#${view}`) history.pushState(null, "", `#${view}`);
+  // 숨겨져 있던 그래프는 크기가 0으로 잡혀 있을 수 있어 다시 맞춘다
+  if (view === "overview") {
+    requestAnimationFrame(() => {
+      equityChart?.resize();
+      dailyChart?.resize();
+    });
+  }
+}
+
+document.querySelectorAll(".nav-item[data-view]").forEach((a) => {
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    setView(a.dataset.view);
   });
 });
+window.addEventListener("popstate", () => setView((location.hash || "").slice(1), false));
+setView(document.documentElement.dataset.view, false);
+
+// 시세표: 넓은 화면에선 오른쪽 BTC·QQQ 차트 위, 오른쪽 패널이 숨는 좁은 화면(1400px 이하)에선
+// 개요 화면의 요약 카드 바로 아래로 옮긴다.
+const wideMq = window.matchMedia("(min-width: 1401px)");
+function placeMarket() {
+  const market = document.getElementById("section-market");
+  if (!market) return;
+  if (wideMq.matches) {
+    const side = document.querySelector(".side-panel");
+    if (market.parentElement !== side) side.insertBefore(market, side.firstChild);
+  } else {
+    const anchor = document.getElementById("section-overview");
+    if (market.previousElementSibling !== anchor) anchor.after(market);
+  }
+}
+placeMarket();
+wideMq.addEventListener?.("change", placeMarket);
 
 const alertModal = document.getElementById("alertModal");
 
@@ -1285,3 +1413,14 @@ function initCollapsiblePanels() {
   });
 }
 initCollapsiblePanels();
+
+// 라이트/다크 전환 시 그래프를 새 테마 색으로 다시 만든다 (theme.js)
+onThemeChange(() => {
+  if (equityChart) equityChart.destroy();
+  if (dailyChart) dailyChart.destroy();
+  equityChart = null;
+  dailyChart = null;
+  const s = summaryByDays[equityDays] || lastSummary;
+  if (s) renderEquityChart(s);
+  if (lastSummary) renderDonut(lastSummary);
+});

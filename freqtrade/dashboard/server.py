@@ -1462,6 +1462,8 @@ def api_summary():
     # 롱/숏 개수를 따로 내서 프론트가 봇 것과 합산하게 한다.
     manual_longs = sum(1 for p in manual_positions if p.get("side") == "long")
     manual_shorts = sum(1 for p in manual_positions if p.get("side") == "short")
+    # 상단 "보유 포지션 손익" 카드용 수동 포지션 평가손익 합계(조회 실패면 None)
+    manual_unrealized = sum(float(p.get("pnl") or 0) for p in manual_positions) if acct.get("ok") else None
 
     return jsonify(
         {
@@ -1477,6 +1479,7 @@ def api_summary():
                 "manual_position_count": manual_position_count,
                 "manual_longs": manual_longs,
                 "manual_shorts": manual_shorts,
+                "manual_unrealized": manual_unrealized,
                 "total_profit_pct": (total_profit_abs / total_starting * 100) if total_starting else 0,
                 "unmanaged_positions": list(unmanaged.values()),
                 # 청산 이력 테이블에서 봇 기록과 합쳐서 보여줄 수동 청산들.
@@ -2066,7 +2069,11 @@ def api_notifications():
 
 @app.get("/")
 def index():
-    return send_from_directory(app.static_folder, "index.html")
+    # 첫 페이지는 매번 새로 확인하게 한다(바뀌었을 때만 다시 받음). 브라우저가 옛
+    # index.html 을 붙잡고 있으면 그 안의 ?v= 버전 표시도 옛것이라 새 JS/CSS 가 안 뜬다.
+    resp = send_from_directory(app.static_folder, "index.html")
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
 
 
 def _send_backfill_telegram(t: dict) -> None:
