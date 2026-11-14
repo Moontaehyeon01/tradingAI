@@ -145,8 +145,10 @@ XSectMomentumStrategy — 횡단면 모멘텀 (시장중립 롱숏)
   - 신규 진입은 매일 09:00~10:00 KST(순위 확정 후)에만 - 장중에 빈 자리는 다음날까지 비워둠
   - 손절은 안전망만 (개별 손절이 아니라 포트폴리오 분산으로 위험을 관리하는 전략)
 """
+import json
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -282,6 +284,17 @@ class XSectMomentumStrategy(IStrategy):
     # 계좌 포지션 조회 주기 - 진입 판단(매 루프)마다 거래소를 부르지 않게 캐시한다.
     FOREIGN_REFRESH = timedelta(seconds=60)
 
+    # 변동성에 맞춘 진입 금액 (2026-11-14). 시장이 거칠 때 자동으로 진입 금액을 줄인다.
+    #   배율 = btc_vol_target / (BTC 최근 btc_vol_window일 일수익률 표준편차 x sqrt(365))
+    #   -> [btc_vol_min_scale, 1.0] 로 clip. 1.0 이면 평소와 완전히 같다(늘리지는 않는다).
+    # None 이면 끈다. 하위 클래스가 켠다(XSectRsiStrategy 가 0.60).
+    # 2026-11-14 백테스트(2021~2026, 19종목 RSI14): 연수익 101% -> 102%, 샤프 1.40 -> 1.48,
+    # 최대낙폭 -57% -> -49%, 최악의 달 -27% -> -17%, 평균 배율 0.93. 전·후반 모두 개선.
+    # 새로 여는 포지션의 금액에만 적용된다 - 이미 열린 포지션은 건드리지 않는다.
+    btc_vol_target: Optional[float] = None
+    btc_vol_window = 20
+    btc_vol_min_scale = 0.25
+
     def __init__(self, config: dict) -> None:
         super().__init__(config)
         # 그날의 전체 순위(롱은 강한 순, 숏은 약한 순) - 하루 1회 확정
@@ -301,10 +314,74 @@ class XSectMomentumStrategy(IStrategy):
         self._foreign_pairs: set = set()
         self._foreign_checked_at: Optional[datetime] = None
         self._foreign_ok = False
+        # 변동성 배율(1.0 = 축소 없음)과 그 근거 - 대시보드 표시용으로 파일에도 남긴다
+        self._vol_scale = 1.0
+        self._btc_vol: Optional[float] = None
+        self._vol_scale_saved = None
 
     def leverage(self, pair, current_time, current_rate, proposed_leverage,
                  max_leverage, entry_tag, side, **kwargs) -> float:
         return float(self.config.get("leverage", 1))
+
+    # ------------------------------------------------------------------
+    # 변동성에 맞춘 진입 금액
+    # ------------------------------------------------------------------
+    def _update_vol_scale(self) -> None:
+        """BTC 최근 변동성으로 진입 금액 배율을 정한다. 데이터가 없으면 1.0(축소 없음)."""
+        if not self.btc_vol_target:
+            return
+        stake = self.config.get("stake_currency", "USDT")
+        scale, vol = 1.0, None
+        try:
+            df, _ = self.dp.get_analyzed_dataframe(f"BTC/{stake}:{stake}", self.timeframe)
+            if df is not None and "close" in df.columns and len(df) >= self.btc_vol_window + 1:
+                closes = df["close"].to_numpy(dtype=float)[-(self.btc_vol_window + 1):]
+                rets = np.diff(closes) / closes[:-1]
+                if np.all(np.isfinite(rets)):
+                    vol = float(np.std(rets, ddof=1) * np.sqrt(365))
+                    if vol > 0:
+                        scale = float(np.clip(self.btc_vol_target / vol, self.btc_vol_min_scale, 1.0))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("변동성 배율 계산 실패 - 축소 없이 진행: %s", exc)
+        self._vol_scale, self._btc_vol = scale, vol
+        state = (round(scale, 4), None if vol is None else round(vol, 4))
+        if state != self._vol_scale_saved:
+            self._vol_scale_saved = state
+            logger.info("변동성 배율 %.2f (BTC %d일 변동성 %s)", scale, self.btc_vol_window,
+                        "?" if vol is None else f"{vol:.0%}")
+            try:
+                path = Path(self.config["user_data_dir"]) / f"vol_scale_{type(self).__name__}.json"
+                path.write_text(json.dumps({
+                    "scale": state[0], "btc_vol": state[1], "target": self.btc_vol_target,
+                    "window": self.btc_vol_window, "updated": datetime.utcnow().isoformat() + "Z",
+                }))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("변동성 배율 파일 기록 실패: %s", exc)
+
+    def custom_stake_amount(self, pair: str, current_time: datetime, current_rate: float,
+                            proposed_stake: float, min_stake: Optional[float], max_stake: float,
+                            leverage: float, entry_tag: Optional[str], side: str, **kwargs) -> float:
+        """배율이 1.0 이면 freqtrade 가 정한 금액 그대로. 1.0 미만이면
+        (계좌 총액 / 최대 포지션 수) x 배율 로 줄인다. freqtrade 의 "unlimited" 금액은
+        "남은 잔고 / 남은 칸"이라, 앞 포지션을 줄이면 뒤 포지션이 그만큼 커진다 - 그래서
+        남은 잔고가 아니라 계좌 총액 기준으로 계산해 모든 포지션이 같은 비율로 줄게 한다."""
+        scale = self._vol_scale if self.btc_vol_target else 1.0
+        if scale >= 0.999:
+            return proposed_stake
+        try:
+            total = float(self.wallets.get_total(self.config["stake_currency"]))
+            slots = int(self.config.get("max_open_trades") or 0)
+            ratio = float(self.config.get("tradable_balance_ratio", 1.0))
+            if total <= 0 or slots <= 0:
+                return proposed_stake
+            stake = min(proposed_stake, total * ratio / slots * scale, max_stake)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("%s: 진입 금액 조절 실패 - 기본 금액으로 진입: %s", pair, exc)
+            return proposed_stake
+        if min_stake and stake < min_stake:
+            stake = min_stake  # 거래소 최소 주문 금액 밑으로는 못 줄인다
+        logger.info("%s: 변동성 배율 %.2f 적용 - 진입 금액 %.2f -> %.2f", pair, scale, proposed_stake, stake)
+        return stake
 
     # ------------------------------------------------------------------
     # 순위 계산: freqtrade 는 페어별로 독립 호출되므로, 전체를 보는 계산은
@@ -338,6 +415,7 @@ class XSectMomentumStrategy(IStrategy):
         # 이미 열려있는 포지션의 익절폭은 계속 최신으로 유지해야 한다.
         self._tp_by_pair = self._compute_tp_by_pair()
         self._update_daily_ranking(current_time)
+        self._update_vol_scale()
         # 순위는 하루 고정이지만, 재진입 대기가 풀리는 시점은 하루 중 아무 때나
         # 올 수 있어서 실제 후보는 매 루프 다시 고른다.
         k = self.top_k.value

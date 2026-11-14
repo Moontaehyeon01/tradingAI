@@ -37,6 +37,8 @@ from XSectMomentumStrategy import XSectMomentumStrategy
 
 class XSectRsiStrategy(XSectMomentumStrategy):
     rsi_period = 14
+    # BTC 20일 변동성이 연 60%를 넘으면 그 비율만큼 진입 금액을 줄인다(부모 클래스 주석 참고)
+    btc_vol_target = 0.60
 
     def _rank_score(self, closes: np.ndarray) -> Optional[float]:
         n = self.rsi_period

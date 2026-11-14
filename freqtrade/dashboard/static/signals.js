@@ -86,6 +86,16 @@ function renderBoxGroup(items) {
 
 /* ---------------- 횡단면 모멘텀 ---------------- */
 
+// 변동성에 맞춘 진입 금액(전략 btc_vol_target): 시장이 거칠면 새 포지션 금액을 자동으로 줄인다
+function volScaleNote(item) {
+  const sc = item?.vol_scale;
+  if (typeof sc !== "number") return "";
+  const vol = typeof item.btc_vol === "number" ? ` (BTC 20일 변동성 연 ${(item.btc_vol * 100).toFixed(0)}%)` : "";
+  return sc >= 0.999
+    ? ` · 진입 금액 100%${vol}`
+    : ` · 변동성이 높아 진입 금액 ${(sc * 100).toFixed(0)}%로 축소${vol}`;
+}
+
 function renderXsectGroup(items) {
   // 순위 점수 높은 순으로 - 위가 롱 후보, 아래가 숏 후보.
   // 점수는 봇마다 다르다: 기본은 14일 수익률, RSI 봇은 RSI(14) (score_kind).
@@ -128,7 +138,8 @@ function renderXsectGroup(items) {
   const note =
     `${items[0]?.bot_name ?? "Momentum"}${items[0]?.stopped ? " [정지 중 · 켜면 이 순위로 진입]" : ""}: ` +
     `${scoreName} 기준 감시 페어 ${items.length}개 중 ` +
-    `상위 ${longs}개 롱 후보, 하위 ${shorts}개 숏 후보 (다음 일봉 마감 시 리밸런싱)`;
+    `상위 ${longs}개 롱 후보, 하위 ${shorts}개 숏 후보 (다음 일봉 마감 시 리밸런싱)` +
+    volScaleNote(items[0]);
   const caption = `<div class="panel-sub" style="margin:8px 0 4px">${note}</div>`;
 
   const table = `${caption}
