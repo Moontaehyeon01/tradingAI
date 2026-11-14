@@ -97,7 +97,9 @@ BOTS = [
      "skip_foreign_positions": True,
      "take_profit_vol_scaled": True,
      "hold_extends_if_ranked": True, "max_hold_hard_h": 96,
-     "reentry_cooldown_h": 48},
+     "reentry_cooldown_h": 48,
+     # 변동성에 맞춘 진입 금액(2026-11-14): 전략이 하루 한 번 이 파일에 현재 배율을 남긴다
+     "vol_scale_file": "user_data/vol_scale_XSectRsiStrategy.json"},
     {"id": "xsectmomentum", "name": "Momentum (횡단면 모멘텀)",
      "url": "http://127.0.0.1:8087", "leverage": 2,
      # 정지하면 컨테이너까지 꺼서 서버 메모리(~200MB)를 아낀다(2026-10-17). 꺼져 있는
@@ -991,13 +993,29 @@ def fetch_signals():
             continue
 
         items = _xsect_signals(bot) if kind == "xsect_momentum" else _box_signals(bot)
+        vol_scale = _read_vol_scale(bot)
         for item in items:
             item["kind"] = kind
             item["stopped"] = not running
             item.setdefault("bot_name", bot["name"])
+            if vol_scale:
+                item["vol_scale"] = vol_scale.get("scale")
+                item["btc_vol"] = vol_scale.get("btc_vol")
         out.extend(items)
     _signal_cache.update({"ts": now, "data": out})
     return out
+
+
+def _read_vol_scale(bot: dict) -> dict | None:
+    """전략이 남긴 변동성 배율 파일({"scale": 0.62, "btc_vol": 0.97, ...}). 없으면 None."""
+    rel = bot.get("vol_scale_file")
+    if not rel:
+        return None
+    try:
+        d = json.loads((ROOT.parent / rel).read_text())
+        return d if isinstance(d.get("scale"), (int, float)) else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 @app.get("/api/signals")
