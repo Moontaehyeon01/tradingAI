@@ -1566,3 +1566,13 @@ svg.ico { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: r
   .chart-panel .equity-controls { align-items: flex-start; }
   .footer { flex-direction: column; gap: 2px; font-size: 11px; }
 }
+
+/* 상단 로고: 태리 캐릭터 (2026-11-11, ◆ 대체) */
+img.brand-mark {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  display: block;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px var(--border);
+}
+
