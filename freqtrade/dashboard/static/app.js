@@ -667,7 +667,7 @@ function goLogin() {
 
 async function doLogout() {
   try {
-    await fetch("/api/logout", { method: "POST" });
+    await fetch("/api/logout", { method: "POST", headers: { "X-Requested-With": "dashboard" } });
   } catch {
     /* 실패해도 아래에서 상태를 다시 읽어 반영한다 */
   }
@@ -733,7 +733,7 @@ async function onBotPowerClick(botId, action) {
   const btns = document.querySelectorAll(`.power-btn[data-bot="${botId}"]`);
   btns.forEach((b) => { b.disabled = true; b.textContent = "..."; });
   try {
-    const res = await fetch(`/api/bots/${botId}/${action}`, { method: "POST" });
+    const res = await fetch(`/api/bots/${botId}/${action}`, { method: "POST", headers: { "X-Requested-With": "dashboard" } });
     const data = await res.json();
     if (res.status === 401) {
       isAuthed = false;
@@ -793,7 +793,7 @@ function renderBotCard(bots, selectedBotId) {
         <div class="bot-card-head">
           ${renderBotTitleTabs(bots, bot.id)}
         </div>
-        <div class="card-error">봇에 연결할 수 없습니다${bot.error ? ` (${bot.error})` : ""}</div>
+        <div class="card-error">봇에 연결할 수 없습니다${bot.error ? ` (${escText(bot.error)})` : ""}</div>
       </div>`;
   }
 
@@ -885,7 +885,7 @@ function renderHistory(summary) {
           <td>${sidePill}</td>
           <td class="${pnlClass(t.close_profit_pct)}">${fmtPct(t.close_profit_pct)}</td>
           <td class="${pnlClass(t.close_profit_abs)}">${fmtUsd(t.close_profit_abs)}</td>
-          <td class="neutral">${t.exit_reason_ko ?? t.exit_reason ?? "–"}</td>
+          <td class="neutral">${escText(t.exit_reason_ko ?? t.exit_reason ?? "–")}</td>
           <td class="neutral">${timeAgo(t.close_date)}</td>
         </tr>`;
     })
@@ -1152,7 +1152,7 @@ function renderAlerts(alerts) {
             <div class="alert-icon entry">${a.is_short ? "S" : "L"}</div>
             <div class="alert-body">
               <div class="alert-title">
-                <span class="alert-bot-tag">${a.bot_name}</span>
+                <span class="alert-bot-tag">${escText(a.bot_name)}</span>
                 진입 체결 · ${fmtPair(a.pair)} · <span class="${a.is_short ? "neg" : "pos"}">${a.side_ko}</span>
               </div>
             </div>
@@ -1167,10 +1167,10 @@ function renderAlerts(alerts) {
             <div class="alert-icon ${iconCls}">${a.is_short ? "S" : "L"}</div>
             <div class="alert-body">
               <div class="alert-title">
-                <span class="alert-bot-tag">${a.bot_name}</span>
+                <span class="alert-bot-tag">${escText(a.bot_name)}</span>
                 청산 완료 · ${fmtPair(a.pair)} · <span class="${cls}">${fmtPct(a.profit_ratio_pct)}</span>
               </div>
-              <div class="alert-sub">${fmtUsd(a.profit_amount)} ${a.stake_currency} · ${a.exit_reason_ko}</div>
+              <div class="alert-sub">${fmtUsd(a.profit_amount)} ${escText(a.stake_currency)} · ${escText(a.exit_reason_ko)}</div>
             </div>
             <div class="alert-time">${timeAgo(a.time.replace("T", " ").slice(0, 19))}</div>
           </div>`;
@@ -1182,7 +1182,7 @@ function renderAlerts(alerts) {
             <div class="alert-icon ${up ? "exit-pos" : "exit-neg"}">${a.is_short ? "S" : "L"}</div>
             <div class="alert-body">
               <div class="alert-title">
-                <span class="alert-bot-tag">${a.bot_name}</span>
+                <span class="alert-bot-tag">${escText(a.bot_name)}</span>
                 ${up ? `수익 +${a.step}%` : `손실 ${a.step}%`} 도달 · ${fmtPair(a.pair)} · <span class="${up ? "pos" : "neg"}">${fmtPct(a.profit_ratio_pct)}</span>
               </div>
               <div class="alert-sub">${fmtUsd(a.profit_amount)} USDT · 보유 중 (직접 정리 판단용 알림)</div>
