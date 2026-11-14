@@ -4,24 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>태리의 매매봇</title>
-<link rel="icon" href="favicon.ico?v=20261111a" sizes="any">
-<link rel="icon" type="image/png" sizes="32x32" href="img/favicon-32.png?v=20261111a">
-<link rel="icon" type="image/png" sizes="192x192" href="img/icon-192.png?v=20261111a">
-<link rel="apple-touch-icon" href="img/apple-touch-icon.png?v=20261111a">
+<link rel="icon" href="favicon.ico?v=20261112a" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="img/favicon-32.png?v=20261112a">
+<link rel="icon" type="image/png" sizes="192x192" href="img/icon-192.png?v=20261112a">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png?v=20261112a">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
-<script>
-  // 라이트/다크 모드: 저장된 선택이 있으면 그것, 없으면 라이트(theme.js 에서 전환)
-  (function () {
-    var t = null;
-    try { t = localStorage.getItem("theme"); } catch (e) {}
-    document.documentElement.dataset.theme = t === "dark" ? "dark" : "light";
-    var v = (location.hash || "").slice(1);
-    if (["overview", "signals", "history", "ai"].indexOf(v) < 0) v = "overview";
-    document.documentElement.dataset.view = v;
-  })();
-</script>
-<link rel="stylesheet" href="style.css?v=20261111a">
+<script src="theme-init.js?v=20261112a"></script>
+<link rel="stylesheet" href="style.css?v=20261112a">
 </head>
 <body>
 
@@ -30,7 +20,7 @@
   <!-- ===== 상단 네비게이션 (예전엔 왼쪽 세로 사이드바였다) ===== -->
   <header class="topnav">
     <div class="brand">
-      <img class="brand-mark" src="img/taeri-logo.png?v=20261111a" alt="" width="30" height="30">
+      <img class="brand-mark" src="img/taeri-logo.png?v=20261112a" alt="" width="30" height="30">
       <span class="brand-name">태리의 매매봇</span>
     </div>
 
@@ -369,15 +359,15 @@
 </nav>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="theme.js?v=20261111a"></script>
-<script src="app.js?v=20261111a"></script>
-<script src="signals.js?v=20261111a"></script>
-<script src="account.js?v=20261111a"></script>
-<script src="headlines.js?v=20261111a"></script>
-<script src="ai.js?v=20261111a"></script>
+<script src="theme.js?v=20261112a"></script>
+<script src="app.js?v=20261112a"></script>
+<script src="signals.js?v=20261112a"></script>
+<script src="account.js?v=20261112a"></script>
+<script src="headlines.js?v=20261112a"></script>
+<script src="ai.js?v=20261112a"></script>
 
 <!-- 오른쪽 차트: tv.js 를 먼저 불러온 뒤 charts.js 가 위젯을 만든다. -->
 <script src="https://s3.tradingview.com/tv.js"></script>
-<script src="charts.js?v=20261111a"></script>
+<script src="charts.js?v=20261112a"></script>
 </body>
 </html>

@@ -21,7 +21,7 @@ function aiParagraphs(text) {
   if (!text) return "";
   return text
     .split(/\n{2,}/)
-    .map((p) => `<p>${p.trim()}</p>`)
+    .map((p) => `<p>${escText(p.trim())}</p>`)
     .join("");
 }
 
@@ -83,7 +83,7 @@ function renderPredictionScore(pred) {
       <div class="ai-score-grid">${liveBlock}</div>
       ${live ? `<div class="ai-score-model">※ '판단대로 했다면'은 자금을 그날 예측한 코인들에 똑같이 나눠 하루씩 보유하고 왕복 수수료 0.1%를 뺀 모의 누적 수익률입니다(레버리지 1배, 실제 매매 아님).</div>` : ""}
       <div class="ai-score-model">${modelLine}</div>
-      ${pred.last_error ? `<div class="ai-score-warn">예측 작업 오류: ${pred.last_error}</div>` : ""}
+      ${pred.last_error ? `<div class="ai-score-warn">예측 작업 오류: ${escText(pred.last_error)}</div>` : ""}
       ${
         recentRows
           ? `<div class="ai-score-table-wrap"><table class="ai-score-table">
@@ -100,7 +100,7 @@ function renderAiOpinion(payload, pred) {
 
   const score = renderPredictionScore(pred);
   if (payload.error) {
-    setHTMLIfChanged(el, `${score}<div class="empty-row">${payload.error}</div>`);
+    setHTMLIfChanged(el, `${score}<div class="empty-row">${escText(payload.error)}</div>`);
     return;
   }
   if (!payload.data) {
@@ -125,7 +125,7 @@ function renderAiOpinion(payload, pred) {
             }</span>
           </div>
           <div class="ai-confidence">확신도: ${c.confidence}</div>
-          <div class="ai-reasoning">${c.reasoning}</div>
+          <div class="ai-reasoning">${escText(c.reasoning)}</div>
           <div class="ai-expand-hint"><span class="ai-expand-arrow">▾</span> <span class="ai-expand-label">상세 리포트 보기</span></div>
         </button>
         <div class="ai-detail" hidden>${aiParagraphs(c.detail)}</div>
@@ -142,12 +142,12 @@ function renderAiOpinion(payload, pred) {
     ${score}
     <button type="button" class="ai-expand-toggle ai-summary-toggle"
             data-label-collapsed="전체 시황 리포트 보기" data-label-expanded="접기">
-      <div class="ai-summary">${d.market_summary || ""}</div>
+      <div class="ai-summary">${escText(d.market_summary || "")}</div>
       <div class="ai-expand-hint"><span class="ai-expand-arrow">▾</span> <span class="ai-expand-label">전체 시황 리포트 보기</span></div>
     </button>
     <div class="ai-detail ai-market-report" hidden>${aiParagraphs(d.market_report)}</div>
     <div class="ai-coin-grid">${coins}</div>
-    ${d.caveat ? `<div class="ai-caveat">${d.caveat}</div>` : ""}
+    ${d.caveat ? `<div class="ai-caveat">${escText(d.caveat)}</div>` : ""}
     <div class="ai-meta">롱/숏: 예측 모델 · 리포트: ${d.model || ""} · ${generatedAgo} 생성${
        d.trigger ? ` · 주요 뉴스로 앞당겨 갱신: ${escHtml(d.trigger)}` : ""
      }</div>

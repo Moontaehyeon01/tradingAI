@@ -14,7 +14,9 @@ freqtrade REST API를 감싸는 얇은 프록시 겸 정적 파일 서버.
 
 import hashlib
 import hmac
+import ipaddress
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -28,7 +30,7 @@ from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import requests
 from flask import Flask, jsonify, request, Response, send_from_directory
@@ -272,21 +274,108 @@ app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="")
 LOGOUT_COOKIE = "dash_logged_out"
 
 
+# ---------------------------------------------------------------------------
+# 보안 (2026-11-12 점검 후 보강)
+#
+# 1) 비밀번호 비교는 hmac.compare_digest 로(응답 시간으로 글자를 맞춰 가는 공격 방지),
+#    DASHBOARD_PASSWORD 가 비어 있으면 아무도 로그인할 수 없다(빈 비밀번호 통과 방지).
+# 2) 로그인 실패 제한: 같은 IP 가 10분 안에 5번 틀리면 10분 동안 그 IP 의 로그인 시도를
+#    전부 거절한다(무차별 대입 방지). 맞는 비밀번호도 잠긴 동안은 거절된다.
+# 3) CSRF: Basic 인증은 브라우저가 다른 사이트에서 보낸 요청에도 자격증명을 붙여 준다.
+#    그래서 조작 요청(POST 등)은 우리 화면의 JS 만 붙일 수 있는 X-Requested-With 헤더가
+#    있어야 하고, Origin 이 오면 우리 주소와 같아야 한다.
+# ---------------------------------------------------------------------------
+LOGIN_FAIL_LIMIT = 5
+LOGIN_FAIL_WINDOW = 600   # 초
+LOGIN_LOCK_SECONDS = 600
+_login_fails: dict = {}   # ip -> [실패 시각...]
+_login_lock: dict = {}    # ip -> 잠금 해제 시각
+_login_guard = threading.Lock()
+
+
+def _client_ip() -> str:
+    return request.remote_addr or "?"
+
+
+def _login_locked(ip: str) -> bool:
+    with _login_guard:
+        until = _login_lock.get(ip, 0)
+        if until > time.time():
+            return True
+        _login_lock.pop(ip, None)
+        return False
+
+
+def _note_login_failure(ip: str) -> None:
+    now = time.time()
+    with _login_guard:
+        fails = [t for t in _login_fails.get(ip, []) if now - t < LOGIN_FAIL_WINDOW]
+        fails.append(now)
+        _login_fails[ip] = fails
+        if len(fails) >= LOGIN_FAIL_LIMIT:
+            _login_lock[ip] = now + LOGIN_LOCK_SECONDS
+            _login_fails.pop(ip, None)
+            app.logger.warning("login locked for %s after %d failures", ip, len(fails))
+        # 메모리가 끝없이 늘지 않게 오래된 기록 정리
+        if len(_login_fails) > 5000:
+            for k in [k for k, v in _login_fails.items() if not v or now - v[-1] > LOGIN_FAIL_WINDOW]:
+                _login_fails.pop(k, None)
+
+
+def _credentials_ok() -> bool:
+    """요청에 실린 Basic 자격증명이 맞는지(로그아웃 쿠키는 보지 않는다)."""
+    auth = request.authorization
+    if not auth or auth.username is None or auth.password is None:
+        return False
+    if not DASHBOARD_PASSWORD:
+        return False
+    ip = _client_ip()
+    if _login_locked(ip):
+        return False
+    ok = hmac.compare_digest(auth.username.encode(), DASHBOARD_USERNAME.encode()) & \
+        hmac.compare_digest(auth.password.encode(), DASHBOARD_PASSWORD.encode())
+    if ok:
+        with _login_guard:
+            _login_fails.pop(ip, None)
+    else:
+        _note_login_failure(ip)
+    return bool(ok)
+
+
 def _is_authed() -> bool:
     if request.cookies.get(LOGOUT_COOKIE):
         return False
-    auth = request.authorization
-    return bool(
-        auth and auth.username == DASHBOARD_USERNAME and auth.password == DASHBOARD_PASSWORD
-    )
+    return _credentials_ok()
 
 
 def _auth_challenge():
+    if _login_locked(_client_ip()):
+        return Response("로그인 시도가 너무 많습니다. 10분 뒤 다시 시도하세요.", 429,
+                        {"Retry-After": str(LOGIN_LOCK_SECONDS), "Content-Type": "text/plain; charset=utf-8"})
     return Response(
         "인증이 필요합니다.",
         401,
         {"WWW-Authenticate": 'Basic realm="TradeOps Dashboard"'},
     )
+
+
+def _same_origin_request() -> bool:
+    """조작 요청이 우리 화면에서 온 것인지(CSRF 방어)."""
+    if request.headers.get("X-Requested-With") != "dashboard":
+        return False
+    origin = request.headers.get("Origin")
+    if origin and urlsplit(origin).netloc != request.host:
+        return False
+    return True
+
+
+def _from_this_server() -> bool:
+    """웹훅은 같은 서버의 봇 컨테이너만 부른다 - 루프백/사설 대역에서 온 요청만 받는다."""
+    try:
+        ip = ipaddress.ip_address(request.remote_addr or "")
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private
 
 
 @app.before_request
@@ -296,9 +385,9 @@ def check_dashboard_auth():
 
       - GET/HEAD (대시보드 화면, 조회용 API, 정적 파일) -> 인증 불필요
         단, /api/account 는 예외로 조회도 인증 필수 (미체결 주문이 그대로 드러남)
-      - 그 외 메서드(POST 등: 봇 시작/정지) -> 인증 필수
+      - 그 외 메서드(POST 등: 봇 시작/정지) -> 인증 + 같은 출처 확인(CSRF)
       - /webhook 은 freqtrade 컨테이너가 부르는 경로라 브라우저 로그인과 무관하게
-        WEBHOOK_SECRET으로 따로 검증함 (webhook_relay 함수 안에서 체크)
+        WEBHOOK_SECRET + 호출 주소로 따로 검증함 (webhook_relay 함수 안에서 체크)
       - /login 은 브라우저 Basic 인증 팝업을 띄우기 위한 전용 경로
       - /api/logout 은 이미 로그아웃된 상태에서 또 눌러도 문제없도록 인증에서 제외
     """
@@ -306,17 +395,14 @@ def check_dashboard_auth():
         return None
 
     if request.path == "/api/logout":
+        # 남의 사이트가 대신 로그아웃시키는 것도 막는다
+        if not _same_origin_request():
+            return jsonify({"ok": False, "error": "허용되지 않은 요청입니다."}), 403
         return None
 
     if request.path == "/login":
         # 로그인 시도이므로 로그아웃 표시는 무시하고 자격증명만 본다
-        auth = request.authorization
-        ok = bool(
-            auth
-            and auth.username == DASHBOARD_USERNAME
-            and auth.password == DASHBOARD_PASSWORD
-        )
-        if not ok:
+        if not _credentials_ok():
             return _auth_challenge()
         return None
 
@@ -330,8 +416,45 @@ def check_dashboard_auth():
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return None
 
+    if not _same_origin_request():
+        return jsonify({"ok": False, "error": "허용되지 않은 요청입니다."}), 403
+
     if not _is_authed():
         return jsonify({"ok": False, "error": "로그인이 필요합니다."}), 401
+
+
+# 브라우저 쪽 방어 헤더. 화면에 들어가는 글(뉴스 제목, AI 문장)은 프론트에서 이스케이프하지만,
+# 혹시 빠진 곳이 있어도 CSP 가 인라인 스크립트 실행을 막는다(외부 스크립트는 차트 2곳만 허용).
+_CSP = "; ".join([
+    "default-src 'self'",
+    "script-src 'self' https://cdn.jsdelivr.net https://s3.tradingview.com",
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+    "font-src 'self' data: https://cdn.jsdelivr.net",
+    "img-src 'self' data: https:",
+    "connect-src 'self'",
+    "frame-src https://s.tradingview.com https://*.tradingview.com https://*.tradingview-widget.com",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+])
+
+
+@app.after_request
+def add_security_headers(resp):
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")            # 다른 사이트가 화면을 액자에 넣어 클릭을 가로채지 못하게
+    resp.headers.setdefault("Referrer-Policy", "same-origin")
+    resp.headers.setdefault("X-Robots-Tag", "noindex, nofollow")  # 검색엔진에 잔고·포지션이 노출되지 않게
+    resp.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+    resp.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    resp.headers.setdefault("Content-Security-Policy", _CSP)
+    return resp
+
+
+@app.get("/robots.txt")
+def robots_txt():
+    return Response("User-agent: *\nDisallow: /\n", 200, {"Content-Type": "text/plain; charset=utf-8"})
 
 
 @app.get("/login")
@@ -1944,7 +2067,9 @@ def webhook_relay():
     # "매수/매도" 같은 조건부 한글 변환을 config 안에서 직접 못 함.
     # 그래서 freqtrade가 원본 필드를 그대로 이 엔드포인트로 보내면,
     # 여기서 원하는 한글 형식으로 조립해서 텔레그램으로 재전송함.
-    if request.args.get("secret") != WEBHOOK_SECRET or not WEBHOOK_SECRET:
+    given = request.args.get("secret") or ""
+    if (not WEBHOOK_SECRET or not _from_this_server()
+            or not hmac.compare_digest(given.encode(), WEBHOOK_SECRET.encode())):
         return Response("forbidden", 403)
 
     data = request.get_json(force=True, silent=True) or {}
@@ -3489,5 +3614,26 @@ if __name__ == "__main__":
     threading.Thread(target=_profit_milestone_loop, daemon=True).start()
     threading.Thread(target=predictor.loop, args=(_news_headlines_for_predictor, OPENAI_API_KEY),
                      daemon=True).start()
+
+    # 접속 로그(journal)에 웹훅 주소의 secret= 값이 그대로 남지 않게 가린다
+    class _RedactSecrets(logging.Filter):
+        _pat = re.compile(r"(secret=)[^&\s\"']+")
+
+        def filter(self, record):
+            try:
+                msg = record.getMessage()
+                if "secret=" in msg:
+                    record.msg = self._pat.sub(r"\1***", msg)
+                    record.args = ()
+            except Exception:  # noqa: BLE001
+                pass
+            return True
+
+    logging.getLogger("werkzeug").addFilter(_RedactSecrets())
+
+    # 응답의 Server 헤더에 프레임워크·파이썬 버전을 광고하지 않는다
+    from werkzeug.serving import WSGIRequestHandler
+    WSGIRequestHandler.server_version = "dashboard"
+    WSGIRequestHandler.sys_version = ""
 
     app.run(host=host, port=5000, debug=False, threaded=True)
