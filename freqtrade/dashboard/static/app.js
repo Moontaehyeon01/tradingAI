@@ -1238,22 +1238,7 @@ document.querySelectorAll(".nav-item[data-view]").forEach((a) => {
 window.addEventListener("popstate", () => setView((location.hash || "").slice(1), false));
 setView(document.documentElement.dataset.view, false);
 
-// 시세표: 넓은 화면에선 오른쪽 BTC·QQQ 차트 위, 오른쪽 패널이 숨는 좁은 화면(1400px 이하)에선
-// 개요 화면의 요약 카드 바로 아래로 옮긴다.
-const wideMq = window.matchMedia("(min-width: 1401px)");
-function placeMarket() {
-  const market = document.getElementById("section-market");
-  if (!market) return;
-  if (wideMq.matches) {
-    const side = document.querySelector(".side-panel");
-    if (market.parentElement !== side) side.insertBefore(market, side.firstChild);
-  } else {
-    const anchor = document.getElementById("section-overview");
-    if (market.previousElementSibling !== anchor) anchor.after(market);
-  }
-}
-placeMarket();
-wideMq.addEventListener?.("change", placeMarket);
+// 시세표는 "진입 신호" 화면 맨 위에 있다(2026-11-12, 개요 화면·오른쪽 패널에서 옮김).
 
 const alertModal = document.getElementById("alertModal");
 
